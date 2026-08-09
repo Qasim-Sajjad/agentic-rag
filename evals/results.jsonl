@@ -1,0 +1,1 @@
+{"chunker": 512, "config_hash": "0c5ca74f", "embed_model": "fake-hash-v1", "goldset_version": "v1", "items": 5, "mrr": 0.0, "ndcg@10": 0.0, "overlap": 0.1, "p50_latency_ms": 0, "recall@1": 0.0, "recall@10": 0.0, "recall@5": 0.0, "reranker": "identity", "run_id": "phase4-checkpoint", "unanswerable_accuracy": 1.0}

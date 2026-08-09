@@ -84,6 +84,32 @@ Verified: ruff clean, mypy clean on 47 files, 105 tests pass including all nine
 ladder cases from the spec, with tier 2 Chromium and tier 3 Camoufox launching
 for real against the fixture server.
 
+### 2026-08-10, session 4, phases 2 to 5
+Tool: Claude Code (Opus 5)
+Asked for: Build extract, index, evals and retrieve, one commit per phase.
+Kept: The parser registry keyed on resolved MIME, the per page range PDF gates,
+the structure aware chunker with its three invariants, RRF fused in code rather
+than server side, and adaptive k as pure functions over scores. Fusion and the
+adaptive cut are tested against hand computed fixtures with no database.
+Corrected: The markdown block splitter treated a blank line after a table as
+part of the table, so lists following a table were swallowed into the table
+block. Caught by a test asserting list blocks are typed. The chunker had no
+answer for a single block larger than the target, so an oversized paragraph
+produced a chunk twice the limit; sentence splitting is the fallback, and
+overlap now only carries a trailing block small enough to be context rather
+than a second copy of the chunk. The chunk insert used a bare parameter inside
+a CASE expression, which asyncpg cannot type, so it needed an explicit cast.
+Rewrote: The near duplicate test. My first fixture was one sentence repeated
+ten times, so changing one word changed every shingle and SimHash correctly
+called them different. The test was wrong, not the code, and the fix was a
+realistic multi sentence document.
+Decided: Phases 4 and 5 were swapped. The eval harness measures retrieval, so
+building the harness first would have meant a checkpoint that could not run.
+Recorded in DESIGN known gaps.
+Verified: ruff clean, mypy clean on 56 files. Ingest and search both run end to
+end against Postgres and Qdrant, and `python -m rag.demo ingest-snippet` walks
+a local file from routing through to vectors.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

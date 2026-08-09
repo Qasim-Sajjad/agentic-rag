@@ -10,21 +10,53 @@ Read `CLAUDE.md` before writing code.
 
 ## Setup
 
-TODO after implementation:
+Needs Postgres. Qdrant runs in process by default, so no container is required.
 
 ```bash
-uv sync
-docker compose up -d qdrant
-cp config/settings.example.yaml config/settings.yaml
-uv run python -m rag.index.bootstrap
+uv venv --python 3.12
+uv sync --extra fetch --extra extract --extra index --extra retrieve --group dev
+uv run python -m playwright install chromium
+uv run python -m camoufox fetch
 ```
 
-## Run
+Create the database and put the DSN in `.env`:
 
 ```bash
-uv run uvicorn rag.api.main:app --port 8000    # API
-uv run python -m rag.mcp.server                # MCP server, port 8765
+createdb agentic_rag
+echo "RAG__POSTGRES__DSN=postgresql://USER:PASSWORD@127.0.0.1:5432/agentic_rag" > .env
+uv run python -m rag.db.migrate
 ```
+
+`config/settings.yaml` is optional. Without it the loader reads
+`config/settings.example.yaml`, so a clean clone runs.
+
+## Run the pipeline
+
+```bash
+uv run python -m rag.fetch.bootstrap
+```
+
+```bash
+uv run python -m rag.demo ingest-snippet path/to/page.html --url https://demo.local/snippet-1 --content-type text/html
+```
+
+```bash
+uv run python -m rag.demo ingest https://www.sec.gov/some/filing.htm --source-id sec-edgar
+```
+
+```bash
+uv run python -m rag.demo status
+```
+
+```bash
+uv run python -m evals.run_eval --run-id local
+```
+
+Add `--fake-embedder` to any demo command to skip the 2.2 GB BGE-M3 download.
+The vectors are then meaningless, which is fine for watching the pipeline run
+and useless for judging retrieval quality.
+
+Phases 6 to 9 (MCP, agent, prompts, API) are not built yet.
 
 ## Endpoints
 

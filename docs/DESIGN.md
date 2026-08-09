@@ -208,3 +208,18 @@ Every shortcut, stated plainly.
   `config/sources.yaml` only.
 - Postgres is the only storage adapter. There is no in-memory implementation,
   so every fetch test needs a running database.
+- Qdrant runs in process by default, which is single process: the API and an
+  ingest run cannot hold it at once. `docker compose up -d qdrant` plus
+  `path: null` switches to the server.
+- Docling is wired for office formats but the PDF complex range falls back to
+  PyMuPDF4LLM. The gate that would select Docling is implemented and tested.
+- The gold set is 5 items, not the 115 the eval SPEC targets. Question
+  generation and the auto filter both need an LLM key. The harness, the
+  stratified sampler and the metrics are complete and tested, so filling the
+  set is a data task rather than a code task.
+- Retrieval numbers in `evals/results.jsonl` were produced with the hashing
+  fake embedder, so they measure the harness rather than retrieval quality. A
+  real run needs BGE-M3 and a re-embed of the corpus.
+- Phases 4 and 5 were built in the opposite order to `BUILD_ORDER.md`. The
+  harness measures retrieval, so retrieval had to exist for the phase 4
+  checkpoint to mean anything.
