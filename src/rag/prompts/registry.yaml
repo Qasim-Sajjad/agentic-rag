@@ -1,8 +1,5 @@
-# Active prompt version per role. Superseded versions stay in the repo.
-# PromptRegistry.get(role) loads the active file and hashes its content.
-# The hash is stamped into every trace step as prompt_version.
-
+# Role to active version. Superseded versions stay in the repo, because the
+# diff between rag_answer v1 and v2 is the evidence of iteration.
 router: v1
-responder: v1
-rag_answer: v1
+rag_answer: v2
 fallback: v1
