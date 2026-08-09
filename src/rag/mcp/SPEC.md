@@ -19,14 +19,15 @@ answer.
 ```python
 class SearchCorpusInput(BaseModel):
     query: str = Field(description="Natural language search query")
-    top_k: int = Field(8, ge=1, le=20,
-                       description="Maximum number of chunks to return")
+    top_k: int = Field(8, ge=1, le=20, description="Maximum number of chunks to return")
     doc_type: Literal["html", "pdf", "office"] | None = Field(
-        None, description="Restrict to one document type")
-    source_id: str | None = Field(
-        None, description="Restrict to one registered source")
+        None, description="Restrict to one document type"
+    )
+    source_id: str | None = Field(None, description="Restrict to one registered source")
     date_from: date | None = Field(
-        None, description="Only documents published on or after this date")
+        None, description="Only documents published on or after this date"
+    )
+
 
 class SearchCorpusOutput(BaseModel):
     chunks: list[RetrievedChunk]
@@ -45,9 +46,12 @@ Scrape and ingestion state for a source.
 ```python
 class IngestStatusInput(BaseModel):
     source_id: str | None = Field(
-        None, description="Registered source id. Omit for a corpus summary")
+        None, description="Registered source id. Omit for a corpus summary"
+    )
     domain: str | None = Field(
-        None, description="Look up by domain instead of source id")
+        None, description="Look up by domain instead of source id"
+    )
+
 
 class IngestStatusOutput(BaseModel):
     source_id: str

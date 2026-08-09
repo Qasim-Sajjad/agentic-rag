@@ -1,0 +1,17 @@
+# Source registry seed. Loaded by: python -m rag.fetch.bootstrap
+# One entry per source, not per URL. Adding a domain here is a deliberate
+# legal decision, see src/rag/fetch/SPEC.md.
+#
+# SEC requires a declared user agent with a real contact address. Set
+# fetch.user_agent in config/settings.yaml before crawling this source.
+
+- source_id: sec-edgar
+  domain: www.sec.gov
+  seed_urls:
+    - "https://www.sec.gov/cgi-bin/srqsb?text=form-type%3D10-K"
+    - "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
+  max_tier: 1
+  allow_unlocker: false
+  requests_per_second: 5
+  priority: 1
+  tos_note: "Public data. Fair access policy requires a declared user agent."

@@ -201,3 +201,10 @@ Every shortcut, stated plainly.
   than that. It is enough to test the escalation decision, not evasion.
 - `config/models.yaml` is not read by the settings loader yet. Nothing consumes
   model IDs before phase 5.
+- Tiers 2 and 3 send the browser's own user agent rather than the honest
+  crawler one, since announcing a crawler defeats the point of rendering like a
+  browser. They send `X-Crawler-Contact` instead.
+- No link discovery or sitemap parsing. The frontier is seeded from
+  `config/sources.yaml` only.
+- Postgres is the only storage adapter. There is no in-memory implementation,
+  so every fetch test needs a running database.

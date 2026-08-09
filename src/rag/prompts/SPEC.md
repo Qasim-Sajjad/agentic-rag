@@ -54,8 +54,9 @@ against the actual retrieved set.
 ```python
 class StrippedMarker(BaseModel):
     chunk_id: str
-    pattern: str      # the pattern class matched, not the raw attacker text
+    pattern: str  # the pattern class matched, not the raw attacker text
     count: int
+
 
 class RenderedContext(BaseModel):
     text: str
@@ -63,13 +64,15 @@ class RenderedContext(BaseModel):
     stripped: list[StrippedMarker]
     task_position: Literal["after_context"]
 
-NONCE = secrets.token_hex(4)   # per request
+
+NONCE = secrets.token_hex(4)  # per request
+
 
 def strip_delimiters(text: str, nonce: str) -> tuple[str, list[str]]:
     """Returns the cleaned text and the pattern classes that were removed."""
 
-def render_context(chunks: list[RetrievedChunk], nonce: str) -> RenderedContext:
-    ...
+
+def render_context(chunks: list[RetrievedChunk], nonce: str) -> RenderedContext: ...
 ```
 
 **The renderer reports what it removed.** Returning the strip log rather than
@@ -114,6 +117,7 @@ class Citation(BaseModel):
     chunk_id: str
     source_url: str
 
+
 class AnswerPayload(BaseModel):
     answer: str
     citations: list[Citation]
@@ -133,9 +137,9 @@ The ladder returns what it did, not just its result:
 
 ```python
 class ValidationReport(BaseModel):
-    citations_checked: int      # ids the model emitted, before repair
-    citations_rejected: int     # ids not in the retrieved set
-    repair_attempts: int        # 0 or 1, never more
+    citations_checked: int  # ids the model emitted, before repair
+    citations_rejected: int  # ids not in the retrieved set
+    repair_attempts: int  # 0 or 1, never more
     fell_back: bool
 ```
 

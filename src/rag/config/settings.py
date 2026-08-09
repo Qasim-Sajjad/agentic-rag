@@ -40,6 +40,22 @@ class LoggingSettings(_Section):
     format: Literal["json", "console"] = "json"
 
 
+class PostgresSettings(_Section):
+    dsn: str = "postgresql://rag@127.0.0.1:5432/agentic_rag"
+    pool_min_size: int = 1
+    pool_max_size: int = 10
+    command_timeout_seconds: float = 30.0
+
+
+class TierTimeouts(_Section):
+    """Seconds allowed per tier. Every external call has one, no exceptions."""
+
+    static: float = 15.0
+    browser: float = 30.0
+    stealth: float = 45.0
+    unlocker: float = 60.0
+
+
 class FetchSettings(_Section):
     min_text_chars: int = 200
     max_attempts_per_tier: int = 3
@@ -48,9 +64,26 @@ class FetchSettings(_Section):
     max_retry_after_seconds: float = 300.0
     circuit_failure_threshold: int = 5
     circuit_open_minutes: int = 30
+    circuit_open_cap_hours: int = 6
+    circuit_reopen_limit: int = 3
     policy_cache_ttl_hours: int = 168
     browser_pool_size: int = 4
     default_requests_per_second: float = 1.0
+    robots_cache_ttl_hours: int = 24
+    lease_minutes: int = 10
+    give_up_passes: int = 2
+    give_up_pass_gap_hours: int = 1
+    user_agent: str = "agentic-rag/0.1 (+https://example.invalid/crawler)"
+    impersonate_profile: str = "chrome124"
+    browser_headless: bool = True
+    timeouts: TierTimeouts = TierTimeouts()
+    challenge_markers: tuple[str, ...] = (
+        "just a moment",
+        "cf_chl_opt",
+        "checking your browser",
+        "datadome",
+        "_abck",
+    )
 
 
 class ExtractSettings(_Section):
@@ -135,6 +168,7 @@ class YamlSettingsSource(PydanticBaseSettingsSource):
     def __call__(self) -> dict[str, Any]:
         return self.data
 
+
 # ===================================================================================
 # Override the BaseSettings of Pydantic to load from YAML, Environment and .env file
 # ==================================================================================
@@ -151,6 +185,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingSettings = LoggingSettings()
+    postgres: PostgresSettings = PostgresSettings()
     fetch: FetchSettings = FetchSettings()
     extract: ExtractSettings = ExtractSettings()
     index: IndexSettings = IndexSettings()

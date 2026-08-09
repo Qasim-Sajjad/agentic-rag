@@ -8,10 +8,11 @@ of retrying forever.
 
 ```python
 class FetchTier(IntEnum):
-    STATIC = 1       # curl_cffi with TLS impersonation
-    BROWSER = 2      # Playwright + Chromium
-    STEALTH = 3      # Playwright + Camoufox
-    UNLOCKER = 4     # managed third party API
+    STATIC = 1  # curl_cffi with TLS impersonation
+    BROWSER = 2  # Playwright + Chromium
+    STEALTH = 3  # Playwright + Camoufox
+    UNLOCKER = 4  # managed third party API
+
 
 class FailureReason(StrEnum):
     BLOCKED_PERSISTENT = "blocked_persistent"
@@ -22,6 +23,7 @@ class FailureReason(StrEnum):
     SERVER_ERROR = "server_error"
     UNSUPPORTED_TYPE = "unsupported_type"
 
+
 class FetchResult(BaseModel):
     url: str
     final_url: str
@@ -31,6 +33,8 @@ class FetchResult(BaseModel):
     tier_used: FetchTier
     attempts: int
     fetched_at: datetime
+    headers: dict[str, str] = {}
+
 
 class FetchFailure(BaseModel):
     url: str
@@ -38,16 +42,31 @@ class FetchFailure(BaseModel):
     last_tier: FetchTier
     attempts: int
     detail: str
+    retry_after_seconds: float | None = None
 ```
+
+`headers` is on the result because two decisions need it and neither can reach
+back for it: `cf-mitigated` is a block signature, and 429 handling reads
+`Retry-After`. `retry_after_seconds` is set only when a 429 exceeds the sleep
+cap, and is what the worker uses as the requeue delay.
 
 ```python
 class Fetcher(Protocol):
     tier: FetchTier
+
     async def fetch(self, url: str, timeout: float) -> FetchResult: ...
+    async def close(self) -> None: ...
 ```
 
+A fetcher returns a `FetchResult` for any HTTP response, including 4xx and 5xx,
+and raises only when transport failed before a response existed. Deciding what
+a status means belongs to the orchestrator, which is what keeps escalation
+policy in one module instead of four.
+
 Entry point: `async def fetch(url: str) -> FetchResult | FetchFailure`.
-It never raises for expected failures. It returns `FetchFailure`.
+It never raises for expected failures. It returns `FetchFailure`. The one
+exception is a URL whose domain is not in the registry, which raises
+`UnknownSourceError`: that is a caller bug, not a fetch outcome.
 
 ## Source registry
 
@@ -87,6 +106,7 @@ CREATE TABLE source_state (
     circuit_opened_at    TIMESTAMPTZ,
     circuit_open_seconds INT NOT NULL DEFAULT 1800,
     circuit_reopen_count SMALLINT NOT NULL DEFAULT 0,
+    circuit_first_open_at TIMESTAMPTZ,   -- start of the 24 hour reopen window
     preferred_tier       SMALLINT NOT NULL DEFAULT 1,
     tier_learned_at      TIMESTAMPTZ,
     last_success_at      TIMESTAMPTZ,
@@ -145,9 +165,19 @@ seeded with "just a moment", `cf_chl_opt`, Datadome and Akamai markers).
 
 **Emptiness heuristics.** Extracted text under `min_text_chars` (default 200).
 Body contains an empty SPA root (`<div id="root"></div>`, `__NEXT_DATA__`)
-with no rendered text. A `<noscript>` block is the only content.
+with no rendered text. A `<noscript>` block is the only content. Emptiness is
+an HTML judgement only. A PDF has no rendered text to count and is never
+escalated for being short.
 
 Do not escalate on 404 or on a clean 200 with real content.
+
+**Do not escalate a 429 either.** It is listed as a block status above because
+it is one, but a rate limit is the server saying "slower", not "prove you are a
+browser". Escalating collects the same 429 two to ten seconds more slowly. A
+429 sleeps or requeues at the tier it happened on, and the ladder stops there.
+
+**Do not escalate a 5xx.** A broken server is broken at every tier. Retry in
+place, then give up with `SERVER_ERROR`.
 
 `UNLOCKER` is only attempted when the source registry sets
 `allow_unlocker: true` for that domain. Default is false.
@@ -180,6 +210,8 @@ CREATE TABLE frontier (
     visible_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     priority         SMALLINT NOT NULL DEFAULT 5,
     attempts         SMALLINT NOT NULL DEFAULT 0,
+    passes           SMALLINT NOT NULL DEFAULT 0,   -- exhausted scheduling passes
+    last_pass_at     TIMESTAMPTZ,
     leased_by        TEXT,
     lease_expires_at TIMESTAMPTZ,
     discovered_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -280,6 +312,12 @@ A URL is permanently unreachable when the highest allowed tier has failed all
 its attempts twice, across two separate scheduling passes at least one hour
 apart. Write a `FetchFailure` to the dead letter store with the reason.
 
+That rule spans passes, so it lives in the worker rather than in `fetch()`.
+`frontier.passes` counts exhausted passes and `give_up_pass_gap_hours` sets the
+requeue delay between them. `fetch()` itself records the dead letter entry for
+a terminal single-call failure; the worker records it for the give up case and
+marks the row `dead`.
+
 A source is marked unreachable when its circuit has reopened three times in
 24 hours. The source registry sets `status: unreachable`. It is excluded from
 scheduling until manually reset. `get_ingest_status` surfaces this.
@@ -290,8 +328,10 @@ collapsed into a generic "failed".
 
 ## Legal boundaries
 
-- `robots.txt` fetched once per domain, cached with TTL, parsed with `protego`.
-  A disallowed path returns `ROBOTS_DISALLOWED` without a request.
+- `robots.txt` fetched once per domain, cached on the `source` row with a TTL,
+  parsed with `protego`. A disallowed path returns `ROBOTS_DISALLOWED` without
+  a request to that path. Following RFC 9309, a 4xx on robots.txt means allow
+  all and a 5xx means disallow all.
 - `Crawl-delay` is honoured. Where absent, the per domain token bucket applies
   a default of 1 request per second.
 - The source registry carries a `tos_note` field. Domains whose terms forbid
@@ -326,7 +366,36 @@ Required cases:
 - Five consecutive failures open the circuit, and the next call makes no request
 - Policy cache: second URL on a tier 2 domain starts at tier 2
 
+## Module layout
+
+```
+fetch/
+  types.py       enums and models, no behaviour
+  protocols.py   Fetcher protocol and transport errors
+  escalation.py  what a response means, the only place that decides
+  backoff.py     jittered backoff and the Retry-After cap decision
+  circuit.py     breaker transitions, pure functions over SourceState
+  ratelimit.py   per domain token bucket
+  robots.py      fetch, cache and evaluate robots.txt
+  registry.py    source and source_state repositories
+  frontier.py    queue, claimed with SKIP LOCKED
+  deadletter.py  typed give up records
+  static.py      tier 1, curl_cffi
+  browser.py     tiers 2 and 3, shared browser pool
+  unlocker.py    tier 4, stub
+  service.py     the orchestrator, written last
+  worker.py      claims from the frontier, owns the give up rule
+  factory.py     wiring
+  bootstrap.py   loads config/sources.yaml
+```
+
 ## Known gaps
 
-Tier 4 is an interface with a single stub implementation. No paid unlocker is
-wired up. Swapping in Zyte or Bright Data is a config change plus one class.
+- Tier 4 is an interface with a single stub implementation. No paid unlocker is
+  wired up. Swapping in Zyte or Bright Data is a config change plus one class.
+- Tier 1 sends the honest crawler user agent. Tiers 2 and 3 send the browser's
+  own, because a browser that announces itself as a crawler is not rendering
+  the page a browser would get. They carry an `X-Crawler-Contact` header
+  instead, which is weaker than a matching user agent.
+- No link discovery or sitemap parsing yet. The frontier is filled by
+  `bootstrap` from seed URLs. Discovery inside a source arrives with `index`.

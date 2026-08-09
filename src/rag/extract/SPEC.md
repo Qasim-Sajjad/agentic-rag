@@ -15,17 +15,20 @@ class BlockType(StrEnum):
     CODE = "code"
     FIGURE_CAPTION = "figure_caption"
 
+
 class Provenance(BaseModel):
     page: int | None = None
     bbox: tuple[float, float, float, float] | None = None
     css_path: str | None = None
 
+
 class Block(BaseModel):
     type: BlockType
-    text: str                      # tables are markdown
-    level: int | None = None       # heading depth
+    text: str  # tables are markdown
+    level: int | None = None  # heading depth
     provenance: Provenance
-    confidence: float = 1.0        # below 1.0 only from OCR
+    confidence: float = 1.0  # below 1.0 only from OCR
+
 
 class CanonicalDoc(BaseModel):
     doc_id: str
@@ -43,6 +46,7 @@ class CanonicalDoc(BaseModel):
 class DocumentParser(Protocol):
     name: str
     version: str
+
     async def parse(self, content: bytes, source_url: str) -> CanonicalDoc: ...
 ```
 

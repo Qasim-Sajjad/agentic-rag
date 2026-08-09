@@ -57,6 +57,33 @@ which uvicorn's own dictConfig had already set to propagate: False from the
 integration fixture, so it was asserting on the wrong logger.
 Verified: ruff check . clean, mypy src clean on 12 files, 42 tests pass.
 
+### 2026-08-10, session 3, phase 1 fetch
+Tool: Claude Code (Opus 5)
+Asked for: Build phases 1 through 5, committing each phase separately, starting
+with fetch against the spec.
+Kept: The module split, types and protocols first and the orchestrator last.
+Escalation, backoff and circuit transitions are pure functions over data, which
+is what let the circuit breaker be tested across every transition with a fake
+clock and no database. The `Clock` protocol removed sleeps from tests entirely.
+Corrected: Four things the SPEC did not cover and one it got wrong.
+`FetchResult` needed a `headers` field, because `cf-mitigated` is a block
+signature and `Retry-After` drives the 429 path, and neither can be read after
+the fact. `source_state` needed `circuit_first_open_at` and `frontier` needed
+`passes` and `last_pass_at`, because the "three reopens in 24 hours" and "two
+passes an hour apart" rules are not expressible in the DDL as written. The give
+up rule moved to the worker, since it spans scheduling passes and `fetch()`
+sees one call.
+Rewrote: The escalation rule for 429. The spec lists 429 as a block signature,
+so the first implementation escalated to Chromium and then Camoufox after
+exhausting tier 1 retries. A test measuring slept time on the fake clock caught
+it: 45 seconds of backoff across 9 attempts rather than 15 across 3. A rate
+limit is the server asking for less traffic, not a bot wall, and escalating
+collects the same 429 more slowly. Rate limiting now stops the ladder at the
+tier it happened on. SPEC updated in the same commit.
+Verified: ruff clean, mypy clean on 47 files, 105 tests pass including all nine
+ladder cases from the spec, with tier 2 Chromium and tier 3 Camoufox launching
+for real against the fixture server.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

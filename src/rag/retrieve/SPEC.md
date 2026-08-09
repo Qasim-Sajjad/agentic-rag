@@ -12,6 +12,7 @@ class SearchFilters(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
 
+
 class RetrievedChunk(BaseModel):
     chunk_id: str
     text: str
@@ -21,11 +22,12 @@ class RetrievedChunk(BaseModel):
     published_at: date | None
     page_no: int | None
 
+
 class SearchResult(BaseModel):
     chunks: list[RetrievedChunk]
     confidence: Literal["high", "low", "none"]
     k_used: int
-    reason: str | None       # set when confidence is not high
+    reason: str | None  # set when confidence is not high
 ```
 
 Entry point: `async def search(query, filters, top_k) -> SearchResult`.

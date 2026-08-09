@@ -11,6 +11,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
+    "asyncpg>=0.29",
 ]
 
 # Per phase. Installed when that phase starts, not before, so a phase 0
@@ -30,6 +31,7 @@ dev = [
     "ruff>=0.6.9",
     "mypy>=1.11",
     "types-PyYAML>=6.0",
+    "asyncpg-stubs>=0.29",
     "pre-commit>=3.8",
 ]
 
@@ -65,7 +67,13 @@ select = [
     "BLE",       # no bare except
     "ASYNC",     # async correctness
 ]
-ignore = ["PLR2004"]    # ANN101 and ANN102 were removed from ruff, not needed
+ignore = [
+    "PLR2004",   # ANN101 and ANN102 were removed from ruff, not needed
+    # The Fetcher protocol in src/rag/fetch/SPEC.md takes a timeout by
+    # contract. It is handed to the transport, not implemented by hand, which
+    # is the case this rule exists to catch.
+    "ASYNC109",
+]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8
@@ -80,9 +88,17 @@ max-returns = 4
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "PLR2004", "PLR0915"]
 "notebooks/*" = ["T20", "ANN", "E402"]
+# Playwright and Camoufox ship no type information, and importing either at
+# module scope costs hundreds of milliseconds in processes that never render.
+"src/rag/fetch/browser.py" = ["ANN401", "PLC0415"]
+# curl_cffi responses are untyped, and asyncpg scalars depend on the query.
+"src/rag/fetch/static.py" = ["ANN401"]
+"src/rag/db/pool.py" = ["ANN401"]
 
 [tool.mypy]
-python_version = "3.11"
+# 3.12 because numpy's bundled stubs use `type` statements that mypy rejects
+# under 3.11. The package itself stays 3.11 compatible.
+python_version = "3.12"
 mypy_path = "src"
 strict = true
 warn_return_any = true
@@ -101,4 +117,5 @@ asyncio_mode = "auto"
 markers = [
     "integration: requires the local fixture server",
     "injection: prompt injection defence suite",
+    "slow: launches a real browser or loads a model",
 ]

@@ -32,6 +32,7 @@ class AgentState(TypedDict):
     answer: str | None
     citations: list[Citation]
 
+
 class TraceStep(BaseModel):
     node: str
     tool: str | None

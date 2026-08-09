@@ -8,6 +8,13 @@ logging:
   level: info
   format: json          # json for machines, console for a local terminal
 
+postgres:
+  # Password belongs in .env as RAG__POSTGRES__DSN, never in a committed file.
+  dsn: "postgresql://rag@127.0.0.1:5432/agentic_rag"
+  pool_min_size: 1
+  pool_max_size: 10
+  command_timeout_seconds: 30.0
+
 fetch:
   min_text_chars: 200
   max_attempts_per_tier: 3
@@ -16,9 +23,36 @@ fetch:
   max_retry_after_seconds: 300
   circuit_failure_threshold: 5
   circuit_open_minutes: 30
+  circuit_open_cap_hours: 6
+  circuit_reopen_limit: 3
   policy_cache_ttl_hours: 168
   browser_pool_size: 4
   default_requests_per_second: 1.0
+  robots_cache_ttl_hours: 24
+  lease_minutes: 10
+  give_up_passes: 2
+  give_up_pass_gap_hours: 1
+
+  # Honest user agent with a contact URL, see the legal boundaries section of
+  # src/rag/fetch/SPEC.md.
+  user_agent: "agentic-rag/0.1 (+https://example.invalid/crawler)"
+  impersonate_profile: chrome124
+  browser_headless: true
+
+  timeouts:
+    static: 15.0
+    browser: 30.0
+    stealth: 45.0
+    unlocker: 60.0
+
+  # Body markers that mean a challenge page, not content. Extend per source.
+  challenge_markers:
+    - "just a moment"
+    - "cf_chl_opt"
+    - "checking your browser"
+    - "datadome"
+    - "_abck"
+    - "please enable javascript and cookies"
 
 extract:
   min_chars_per_page: 100

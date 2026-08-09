@@ -26,7 +26,9 @@ def yaml_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     return write
 
+
 # Tests for the Settings Loader
+
 
 def test_yaml_values_override_defaults(yaml_file):
     yaml_file("fetch:\n  min_text_chars: 400\n")

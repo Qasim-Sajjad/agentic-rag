@@ -49,14 +49,17 @@ class FixtureState:
         self.hits.clear()
         self.flaky_attempts = 0
 
+
 # read a file from tests/fixtures/pages
 def _page(name: str) -> str:
     return (PAGES / name).read_text(encoding="utf-8")
+
 
 # Convert to typed Accessor.
 def _state(request: Request) -> FixtureState:
     state: FixtureState = request.app.state.fixture
     return state
+
 
 # Header Instruction for the fixture server to decide which fetcher tier the
 # caller looks like.
