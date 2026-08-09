@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -123,6 +123,19 @@ class RetrieveSettings(_Section):
     k_max: int = 15
 
 
+class LLMSettings(_Section):
+    """Model per role, see src/rag/agent/SPEC.md. The key comes from the
+    environment, never from a committed file."""
+
+    api_key: str = ""
+    router_model: str = "claude-haiku-4-5-20251001"
+    responder_model: str = "claude-sonnet-5"
+    judge_model: str = "claude-opus-5"
+    max_tokens: int = 2048
+    temperature: float = 0.0
+    timeout_seconds: float = 60.0
+
+
 class AgentSettings(_Section):
     max_iterations: int = 1
     recursion_limit: int = 10
@@ -203,8 +216,21 @@ class Settings(BaseSettings):
     extract: ExtractSettings = ExtractSettings()
     index: IndexSettings = IndexSettings()
     retrieve: RetrieveSettings = RetrieveSettings()
+    llm: LLMSettings = LLMSettings()
     agent: AgentSettings = AgentSettings()
     mcp: McpSettings = McpSettings()
+
+    @model_validator(mode="after")
+    def _api_key_from_environment(self) -> Settings:
+        """`ANTHROPIC_API_KEY` is the conventional name, so honour it directly
+        rather than forcing `RAG__LLM__API_KEY` on top of it."""
+        if not self.llm.api_key:
+            key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if key:
+                object.__setattr__(
+                    self, "llm", self.llm.model_copy(update={"api_key": key})
+                )
+        return self
 
     @classmethod
     def settings_customise_sources(

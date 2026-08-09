@@ -109,6 +109,10 @@ max-returns = 4
 # its session and result types are dynamic.
 "src/rag/mcp/client.py" = ["ANN401", "PLC0415"]
 "src/rag/mcp/server.py" = ["ANN201", "PLC0415"]
+# LangGraph and the Anthropic SDK are imported lazily and are dynamically typed.
+"src/rag/agent/graph.py" = ["ANN401", "PLC0415"]
+"src/rag/agent/llm.py" = ["ANN401", "PLC0415"]
+"src/rag/agent/nodes.py" = ["ANN401"]
 
 [tool.mypy]
 # 3.12 because numpy's bundled stubs use `type` statements that mypy rejects
