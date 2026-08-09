@@ -146,6 +146,15 @@ class McpSettings(_Section):
     session_call_budget: int = 20
 
 
+class ApiSettings(_Section):
+    """`api_keys` maps a key to a tenant. Keys belong in .env, not in YAML."""
+
+    api_keys: dict[str, str] = {"dev-key": "default"}
+    explain_enabled: bool = False
+    cache_ttl_seconds: int = 300
+    embed_cache_ttl_seconds: int = 3600
+
+
 def settings_path() -> Path | None:
     """Resolve which YAML file to load, or None when there is none.
 
@@ -219,6 +228,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = LLMSettings()
     agent: AgentSettings = AgentSettings()
     mcp: McpSettings = McpSettings()
+    api: ApiSettings = ApiSettings()
 
     @model_validator(mode="after")
     def _api_key_from_environment(self) -> Settings:

@@ -113,6 +113,11 @@ max-returns = 4
 "src/rag/agent/graph.py" = ["ANN401", "PLC0415"]
 "src/rag/agent/llm.py" = ["ANN401", "PLC0415"]
 "src/rag/agent/nodes.py" = ["ANN401"]
+# FastAPI endpoint closures, a lazy uvicorn import, and cache values that are
+# genuinely any JSON shape.
+"src/rag/api/deps.py" = ["ANN401"]
+"src/rag/api/main.py" = ["ANN401", "PLC0415"]
+"src/rag/api/ask.py" = ["ANN401", "PLC0415"]
 
 [tool.mypy]
 # 3.12 because numpy's bundled stubs use `type` statements that mypy rejects

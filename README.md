@@ -56,7 +56,78 @@ Add `--fake-embedder` to any demo command to skip the 2.2 GB BGE-M3 download.
 The vectors are then meaningless, which is fine for watching the pipeline run
 and useless for judging retrieval quality.
 
-Phases 6 to 9 (MCP, agent, prompts, API) are not built yet.
+## Run the services
+
+The MCP server and the API are separate processes on purpose. Start the MCP
+server first if you want `/agent` to route through it.
+
+```bash
+uv run python -m rag.mcp.server
+```
+
+```bash
+uv run python -m rag.mcp.client
+```
+
+```bash
+uv run uvicorn rag.api.main:app --port 8000
+```
+
+`rag.mcp.client` is the discovery proof: it connects, lists both tools with
+their JSON schemas, calls both and prints the results.
+
+`/ask` and `/agent` need an Anthropic key. Put it in `.env`:
+
+```bash
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
+```
+
+Without a key both endpoints still answer, with the deterministic fallback
+rather than a fabricated answer. That is the designed behaviour, not a crash.
+
+## Endpoints
+
+```bash
+curl -X POST localhost:8000/search -H "X-API-Key: dev-key" -H "Content-Type: application/json" -d '{"query": "cybersecurity risk disclosure", "top_k": 5}'
+```
+
+```bash
+curl -X POST localhost:8000/ask -H "X-API-Key: dev-key" -H "Content-Type: application/json" -d '{"question": "What cybersecurity incidents were disclosed in 2024?"}'
+```
+
+```bash
+curl -X POST localhost:8000/ask -H "X-API-Key: dev-key" -H "Content-Type: application/json" -d '{"question": "What was revenue?", "explain": true}'
+```
+
+```bash
+curl -X POST localhost:8000/agent -H "X-API-Key: dev-key" -H "Content-Type: application/json" -d '{"question": "Is the SEC filings source up to date?"}'
+```
+
+```bash
+curl "localhost:8000/ingest/status?source_id=sec-edgar" -H "X-API-Key: dev-key"
+```
+
+The `explain` block needs `api.explain_enabled: true` in config as well as a
+valid key. It returns the assembled context and the list of what the renderer
+stripped, never the system prompt body.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+```bash
+uv run pytest -k injection
+```
+
+```bash
+uv run pytest -m slow
+```
+
+`-k injection` is the defence suite: 15 attack cases plus a benign lookalike.
+`-m slow` launches Chromium and Camoufox against the fixture server, which is
+the fetch escalation demo.
 
 ## Endpoints
 

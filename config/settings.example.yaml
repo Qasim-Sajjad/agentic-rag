@@ -96,3 +96,23 @@ agent:
 mcp:
   port: 8765
   session_call_budget: 20
+
+llm:
+  # api_key comes from ANTHROPIC_API_KEY in .env, never from this file.
+  router_model: claude-haiku-4-5-20251001
+  responder_model: claude-sonnet-5
+  judge_model: claude-opus-5
+  max_tokens: 2048
+  temperature: 0.0
+  timeout_seconds: 60.0
+
+api:
+  # Map an API key to a tenant. Real keys belong in .env as
+  # RAG__API__API_KEYS, not here.
+  api_keys:
+    dev-key: default
+  # explain returns the assembled context and the strip log. Debug affordance,
+  # off outside a demo, and gated on top of the API key.
+  explain_enabled: false
+  cache_ttl_seconds: 300
+  embed_cache_ttl_seconds: 3600

@@ -222,4 +222,17 @@ Every shortcut, stated plainly.
   real run needs BGE-M3 and a re-embed of the corpus.
 - Phases 4 and 5 were built in the opposite order to `BUILD_ORDER.md`. The
   harness measures retrieval, so retrieval had to exist for the phase 4
-  checkpoint to mean anything.
+  checkpoint to mean anything. Phase 8 was built before phase 7 for the same
+  reason: the agent depends on the prompt registry.
+- The injection suite measures the structural and validation layers, which are
+  deterministic. It does not measure whether a given model follows an injected
+  instruction, because that needs a live model. The instructional layer is
+  assumed bypassable, which is why it is listed third.
+- `/agent` calls the MCP tool implementations in process rather than over the
+  MCP transport. The schemas, the tenant injection, the k cap and the session
+  budget are the same objects the server exposes, so the boundary is enforced,
+  but the process isolation the SPEC describes is not exercised by `/agent`.
+- No `langchain-mcp-adapters`. Tool discovery is live in `rag.mcp.client` and
+  static in the agent.
+- API auth is static keys in config, no rotation, no per key rate limiting.
+- The response cache is in memory, so it is per process and empty on restart.

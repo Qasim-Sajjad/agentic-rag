@@ -110,6 +110,32 @@ Verified: ruff clean, mypy clean on 56 files. Ingest and search both run end to
 end against Postgres and Qdrant, and `python -m rag.demo ingest-snippet` walks
 a local file from routing through to vectors.
 
+### 2026-08-10, session 5, phases 6 to 9
+Tool: Claude Code (Opus 5)
+Asked for: Build MCP, agent, prompts and API against the specs, one commit per
+phase, then the README.
+Kept: The MCP tool logic split from the transport, so both tools are tested
+without a running server. The renderer returning its strip log, which made the
+injection suite assertable on the structural layer rather than only on model
+behaviour. `assess` as a pure function, tested across every branch with no
+graph and no model. The LLM behind a protocol with a scripted implementation,
+which is what let the whole agent be tested with no key and no network.
+Corrected: Three things the environment or the SPEC got wrong. The MCP SDK
+renamed `FastMCP` to `MCPServer` in 2.0 and `inputSchema` to `input_schema`, so
+the SPEC's class name is stale. Phase 8 was built before phase 7, because the
+agent imports the prompt registry. The `/ask` explain block needed the cache
+key treatment nobody had specced, since a cached answer would otherwise return
+another request's nonce.
+Rewrote: The agent retry counter. It started in the conditional edge, which
+looked right and silently did nothing: LangGraph hands edges a copy of the
+state, so the increment was discarded and the loop ran until the fingerprint
+check stopped it. A test asserting exactly one retry caught it. The counter
+moved into the router node, where the mutation persists. Also swapped the graph
+node lambdas for `functools.partial`, because LangGraph checks whether a node
+is a coroutine function and a lambda returning a coroutine fails that check.
+Verified: ruff clean, mypy clean on 71 files, injection suite green, all four
+endpoints tested against the ASGI app with a scripted model.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering
