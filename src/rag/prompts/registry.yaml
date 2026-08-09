@@ -1,0 +1,8 @@
+# Active prompt version per role. Superseded versions stay in the repo.
+# PromptRegistry.get(role) loads the active file and hashes its content.
+# The hash is stamped into every trace step as prompt_version.
+
+router: v1
+responder: v1
+rag_answer: v1
+fallback: v1

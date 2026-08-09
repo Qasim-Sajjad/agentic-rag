@@ -1,0 +1,14 @@
+# Model per role. Different models on purpose, see src/rag/agent/SPEC.md.
+
+router: claude-haiku-4-5-20251001
+responder: claude-sonnet-5
+eval_judge: claude-opus-5
+
+embedding:
+  name: BAAI/bge-m3
+  dims: 1024
+  max_tokens: 8192
+
+reranker:
+  name: cross-encoder/ms-marco-MiniLM-L-6-v2
+  max_passage_tokens: 512

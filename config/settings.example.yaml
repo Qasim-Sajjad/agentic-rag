@@ -1,0 +1,44 @@
+# Copy to config/settings.yaml. Env vars override with RAG__ prefix.
+# Anything a reviewer might change without editing code belongs here.
+
+fetch:
+  min_text_chars: 200
+  max_attempts_per_tier: 3
+  backoff_base_seconds: 2
+  backoff_cap_seconds: 60
+  max_retry_after_seconds: 300
+  circuit_failure_threshold: 5
+  circuit_open_minutes: 30
+  policy_cache_ttl_hours: 168
+  browser_pool_size: 4
+  default_requests_per_second: 1.0
+
+extract:
+  min_chars_per_page: 100
+  max_garbage_ratio: 0.2
+  pages_per_task: 50
+
+index:
+  target_tokens: 512
+  overlap_ratio: 0.1
+  max_table_tokens: 2048
+  simhash_hamming_threshold: 3
+  embed_batch_size: 32
+
+retrieve:
+  candidate_pool: 50
+  rerank_pool: 25
+  rrf_k: 60
+  score_floor: 0.3
+  low_floor: 0.15
+  elbow_delta: 0.15
+  k_min: 3
+  k_max: 15
+
+agent:
+  max_iterations: 1
+  recursion_limit: 10
+
+mcp:
+  port: 8765
+  session_call_budget: 20

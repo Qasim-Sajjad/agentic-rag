@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+config/settings.yaml
+.pytest_cache/
+.ipynb_checkpoints/
+data/
+*.sqlite3
+qdrant_storage/
+.DS_Store
