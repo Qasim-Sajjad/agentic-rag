@@ -136,6 +136,11 @@ The load bearing idea: an injection that changes wording is survivable, one that
 fabricates a source is not. Validation makes the second impossible regardless of
 model behaviour.
 
+Layers 2 and 4 are observable, not just asserted. The renderer returns what it
+stripped and the validator returns what it rejected, both surfaced on `/ask`.
+A defence whose output nobody can see is indistinguishable from a model that
+happened to behave, and the difference is the whole claim.
+
 Structured output is enforced with one repair turn carrying the specific
 validation error, then a deterministic fallback template. Never a loop. Repair
 rate is logged as a quality metric.
@@ -191,3 +196,8 @@ Every shortcut, stated plainly.
 - Agent retry broadens filters by a fixed rule, not an LLM decision.
 - Injection set is 15 fixed cases with a fixed canary. Measures regression, not
   robustness against novel attack classes.
+- The fixture server decides who gets past `/challenge` from the user agent, or
+  from an `x-fixture-tier` header. A real interstitial fingerprints far more
+  than that. It is enough to test the escalation decision, not evasion.
+- `config/models.yaml` is not read by the settings loader yet. Nothing consumes
+  model IDs before phase 5.

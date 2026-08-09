@@ -179,6 +179,47 @@ no chunker logic in the path.
 and it makes "find everything not yet embedded" a fast lookup at 500K rows
 instead of a sequential scan.
 
+## Demo entry point
+
+Exists for live demonstration and manual verification. Two subcommands, both
+running the full path through to a Qdrant upsert.
+
+```bash
+python -m rag.demo ingest <url> [--ephemeral] [--max-tier N]
+python -m rag.demo ingest-snippet <file> [--url URL] [--content-type TYPE] \
+                                        [--tenant TENANT]
+```
+
+`ingest` runs one URL through fetch, extract, chunk, embed and upsert, printing
+the decision made at each stage. `--ephemeral` registers the domain with an
+operator approved `tos_note` rather than requiring a `sources.yaml` edit.
+
+`ingest-snippet` skips fetch and starts at `parse(content, source_url)`, which
+is the same entry the fetcher uses, so nothing downstream can tell the two
+apart. It must run all the way to upsert. Stopping at chunking would leave
+`/ask` with nothing to retrieve, which defeats the reason the command exists.
+
+**Synthetic provenance.** A pasted snippet has none, and three not-null columns
+need values:
+
+| Field | Value for a snippet |
+|---|---|
+| `source_url` | `--url` if given, else `snippet://demo/{sha256(content)[:8]}` |
+| `source_id` | `demo`, a row seeded by bootstrap with `status: paused` so the scheduler never crawls it |
+| `fetch_tier` | `0`, meaning not fetched |
+| `doc_type` | from `--content-type`, defaulting to magic byte detection |
+| `tenant_id` | `--tenant`, default `demo` |
+
+`document.source_id` is a foreign key, so the `demo` source row is a
+prerequisite, not an afterthought. `status: paused` is what keeps a synthetic
+source out of real crawl scheduling.
+
+Pass a real looking `--url` when demonstrating: citations render the URL, and
+`snippet://` in the output reads as a placeholder rather than a source.
+
+Prints at each stage: parser chosen and why, block counts by type, chunk count,
+one sample chunk with its `section_path`, and points upserted.
+
 ## Re-embed
 
 Prerequisite: the `document` and `chunk` tables above, plus `CanonicalDoc` in

@@ -7,11 +7,17 @@ the next phase until the current one passes its checkpoint.
 
 ## Phase 0: foundation
 
-Files: `pyproject.toml`, `config/settings.py`, `tests/fixtures/server.py`
+Files: `pyproject.toml`, `src/rag/config/settings.py`, `src/rag/log.py`,
+`tests/fixtures/server.py`
 
-- Pydantic settings loader reading `config/settings.yaml` with env override
-- structlog setup
-- Fixture server with all 8 endpoints from `tests/SPEC.md`
+- Pydantic settings loader reading `config/settings.yaml` with env override.
+  It lives under `src/` rather than in `config/` so it is importable from an
+  installed package and covered by `mypy src`. `config/settings.yaml` is
+  gitignored, so the loader falls back to `config/settings.example.yaml`
+- structlog setup, with stdlib records routed through the same renderer
+- Fixture server with all 8 endpoints from `tests/SPEC.md`, plus `/robots.txt`
+  (which `/robots-blocked` is defined against) and `/__stats` and `/__reset`.
+  `/__stats` is how a test proves a robots disallowed URL made zero requests
 
 Checkpoint: `pytest tests/integration/test_fixture_server.py` passes. The
 fixture server is the first commit because every fetch test depends on it.
@@ -122,7 +128,9 @@ as a pure function.
 Spec: `src/rag/prompts/SPEC.md`
 
 1. `PromptRegistry` with content hashing
-2. Context renderer: nonce, delimiter stripping, sandwiching
+2. Context renderer: nonce, delimiter stripping, sandwiching. It returns
+   `RenderedContext` including the strip log, never a bare string. Discarding
+   what was stripped is the one thing here that is expensive to retrofit
 3. `rag_answer/v1.md` written without injection rules, on purpose
 4. Run the injection suite, record failures
 5. `rag_answer/v2.md` fixing what broke
@@ -135,7 +143,10 @@ Both v1 and v2 committed. The diff is a deliverable.
 
 Spec: `src/rag/api/SPEC.md`
 
-Four endpoints, auth dependency, caching, error shapes.
+Four endpoints, auth dependency, caching, error shapes. `/ask` returns chunk
+objects and a `validation` report, plus the `explain` block behind
+`api.explain_enabled`. The `api` settings section is added here, since
+`extra="forbid"` means the YAML key and the model land together.
 
 Checkpoint: every curl example in the spec runs against a local server.
 

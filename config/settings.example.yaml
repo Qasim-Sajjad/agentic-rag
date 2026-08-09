@@ -1,5 +1,12 @@
 # Copy to config/settings.yaml. Env vars override with RAG__ prefix.
+# Nested keys use a double underscore: RAG__FETCH__MIN_TEXT_CHARS=400.
 # Anything a reviewer might change without editing code belongs here.
+# When config/settings.yaml is absent this file is loaded instead, so a clean
+# clone and CI both run without a copy step.
+
+logging:
+  level: info
+  format: json          # json for machines, console for a local terminal
 
 fetch:
   min_text_chars: 200
