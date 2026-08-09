@@ -86,7 +86,7 @@ max-returns = 4
 
 # Ignore some rules for specific files. For example, tests often have long functions and many arguments, so we ignore those rules in tests.
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ANN", "PLR2004", "PLR0915"]
+"tests/*" = ["ANN", "PLR2004", "PLR0915", "PLC0415"]
 "notebooks/*" = ["T20", "ANN", "E402"]
 # Playwright and Camoufox ship no type information, and importing either at
 # module scope costs hundreds of milliseconds in processes that never render.
@@ -94,6 +94,15 @@ max-returns = 4
 # curl_cffi responses are untyped, and asyncpg scalars depend on the query.
 "src/rag/fetch/static.py" = ["ANN401"]
 "src/rag/db/pool.py" = ["ANN401"]
+# trafilatura, PyMuPDF, docling, FlagEmbedding and qdrant-client are all heavy
+# imports with no type information. Each is confined to one module, imported
+# lazily so a process that never parses a PDF never loads PyMuPDF.
+"src/rag/extract/html.py" = ["PLC0415"]
+"src/rag/extract/office.py" = ["PLC0415"]
+"src/rag/extract/service.py" = ["PLC0415"]
+"src/rag/extract/pdf.py" = ["ANN401", "PLC0415"]
+"src/rag/index/embed.py" = ["ANN401", "PLC0415"]
+"src/rag/index/store.py" = ["ANN401", "PLC0415"]
 
 [tool.mypy]
 # 3.12 because numpy's bundled stubs use `type` statements that mypy rejects
@@ -109,6 +118,16 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["tests.*", "notebooks.*"]
 disallow_untyped_defs = false
+
+# Third party libraries that ship no type information. Their call sites are
+# wrapped in one module each, so the untyped surface stays contained.
+[[tool.mypy.overrides]]
+module = ["pymupdf4llm.*", "FlagEmbedding.*", "camoufox.*", "trafilatura.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["rag.extract.pdf", "rag.index.embed"]
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

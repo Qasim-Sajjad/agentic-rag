@@ -92,12 +92,24 @@ class ExtractSettings(_Section):
     pages_per_task: int = 50
 
 
+class QdrantSettings(_Section):
+    """`path` runs Qdrant in process, `url` talks to a server. Path wins."""
+
+    url: str = "http://127.0.0.1:6333"
+    path: str | None = None
+    collection: str = "corpus"
+    timeout_seconds: float = 30.0
+
+
 class IndexSettings(_Section):
     target_tokens: int = 512
     overlap_ratio: float = 0.1
     max_table_tokens: int = 2048
     simhash_hamming_threshold: int = 3
     embed_batch_size: int = 32
+    embed_model: str = "BAAI/bge-m3"
+    embed_dims: int = 1024
+    tenant_id: str = "default"
 
 
 class RetrieveSettings(_Section):
@@ -186,6 +198,7 @@ class Settings(BaseSettings):
 
     logging: LoggingSettings = LoggingSettings()
     postgres: PostgresSettings = PostgresSettings()
+    qdrant: QdrantSettings = QdrantSettings()
     fetch: FetchSettings = FetchSettings()
     extract: ExtractSettings = ExtractSettings()
     index: IndexSettings = IndexSettings()

@@ -59,12 +59,22 @@ extract:
   max_garbage_ratio: 0.2
   pages_per_task: 50
 
+qdrant:
+  # Set path to run Qdrant in process with no server. Path wins over url.
+  url: "http://127.0.0.1:6333"
+  path: null
+  collection: corpus
+  timeout_seconds: 30.0
+
 index:
   target_tokens: 512
   overlap_ratio: 0.1
   max_table_tokens: 2048
   simhash_hamming_threshold: 3
   embed_batch_size: 32
+  embed_model: BAAI/bge-m3
+  embed_dims: 1024
+  tenant_id: default
 
 retrieve:
   candidate_pool: 50
