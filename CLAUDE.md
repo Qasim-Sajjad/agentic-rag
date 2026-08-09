@@ -3,6 +3,43 @@
 Agentic RAG over a 100K document corpus scraped from bot-protected sources.
 Read this before writing any code in this repo.
 
+## Start here
+
+If this is your first session on this repo, read in this order before writing
+anything:
+
+1. This file, all of it
+2. `docs/BUILD_ORDER.md` for the phase sequence and checkpoints
+3. `docs/ARCHITECTURE.md` for the system shape
+4. The SPEC of the module you are about to build
+
+Then state which phase you are on and what the checkpoint is, before writing
+code. If the phase is unclear, ask rather than guessing.
+
+## Session protocol
+
+Every session:
+
+1. Say which phase and which module, and read that module's SPEC
+2. Build in the order the phase lists. Types and protocols first, orchestration
+   last
+3. Write the tests named in the SPEC. Failure paths, not just happy paths
+4. Run `ruff check . && mypy src && pytest` before saying you are done
+5. Append one entry to `docs/AI_USAGE.md`
+
+Do not start the next phase until the current checkpoint passes.
+
+## Non negotiable
+
+These are enforced by ruff, mypy and pre-commit hooks. Failing them fails the
+commit, so write to them the first time.
+
+- Max 25 statements per function. Over that, split it
+- Max complexity 8, max 5 arguments, max 8 branches
+- Type annotations on every signature. mypy runs in strict mode
+- No `print`, no bare `except`, no em dashes anywhere
+- No inline prompt strings in `src/`. Prompts load from the registry
+
 ## Stack
 
 - Python 3.11+, asyncio for all IO

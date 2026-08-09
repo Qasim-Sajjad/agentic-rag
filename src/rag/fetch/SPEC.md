@@ -49,9 +49,93 @@ class Fetcher(Protocol):
 Entry point: `async def fetch(url: str) -> FetchResult | FetchFailure`.
 It never raises for expected failures. It returns `FetchFailure`.
 
+## Source registry
+
+Postgres. Two tables, split because config is human edited and state is machine
+written. Splitting them means runtime state can be wiped and rebuilt without
+losing crawl policy.
+
+Owned by this module. `mcp` and `api` read from it, neither writes to it.
+
+**One row per source, not per URL.** A source is a domain or a seed with a crawl
+policy attached. Individual URLs live in the frontier queue. Putting policy per
+URL would duplicate robots and rate config 100,000 times.
+
+```sql
+CREATE TABLE source (
+    source_id           TEXT PRIMARY KEY,        -- "sec-edgar"
+    domain              TEXT NOT NULL,
+    seed_urls           JSONB NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'active',
+                        -- active | paused | unreachable | retired
+    max_tier            SMALLINT NOT NULL DEFAULT 3,
+    allow_unlocker      BOOLEAN NOT NULL DEFAULT FALSE,
+    requests_per_second REAL NOT NULL DEFAULT 1.0,
+    crawl_delay_seconds REAL,                    -- from robots.txt, overrides rps
+    robots_txt          TEXT,
+    robots_fetched_at   TIMESTAMPTZ,
+    tos_note            TEXT,                    -- why max_tier is set as it is
+    priority            SMALLINT NOT NULL DEFAULT 5,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE source_state (
+    source_id            TEXT PRIMARY KEY REFERENCES source(source_id),
+    circuit_state        TEXT NOT NULL DEFAULT 'closed',
+    consecutive_failures INT NOT NULL DEFAULT 0,
+    circuit_opened_at    TIMESTAMPTZ,
+    circuit_open_seconds INT NOT NULL DEFAULT 1800,
+    circuit_reopen_count SMALLINT NOT NULL DEFAULT 0,
+    preferred_tier       SMALLINT NOT NULL DEFAULT 1,
+    tier_learned_at      TIMESTAMPTZ,
+    last_success_at      TIMESTAMPTZ,
+    last_failure_at      TIMESTAMPTZ,
+    last_failure_reason  TEXT,
+    docs_indexed         INT NOT NULL DEFAULT 0,
+    docs_failed          INT NOT NULL DEFAULT 0
+);
+```
+
+`source_state` is the domain policy cache and the circuit breaker. They live
+together because both are per source runtime state written by the fetcher on
+every result.
+
+### Seeding is manual, on purpose
+
+Sources are declared in `config/sources.yaml` and loaded by
+`python -m rag.fetch.bootstrap`.
+
+```yaml
+- source_id: sec-edgar
+  domain: sec.gov
+  seed_urls: ["https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"]
+  max_tier: 1
+  requests_per_second: 10
+  tos_note: "Public data. Fair access policy requires a declared user agent."
+```
+
+URL discovery inside a source is automatic through sitemaps and link following.
+Adding a new domain is not. A new domain entering the corpus is a legal
+decision, not a crawler decision, and a link on page 40,000 should not be able
+to auto enroll a site whose terms forbid automated access.
+
+### Reads and writes
+
+| Field | Written by | Read by |
+|---|---|---|
+| `source.*` | bootstrap, human edits | scheduler, fetch, api |
+| `preferred_tier`, `tier_learned_at` | fetch, on success | fetch |
+| `circuit_*`, `consecutive_failures` | fetch, on every result | fetch, mcp, api |
+| `docs_indexed`, `docs_failed` | index pipeline | mcp, api |
+
+`status` transitions to `unreachable` when `circuit_reopen_count` reaches 3
+within 24 hours. That is the only automatic write to the `source` table.
+
 ## Escalation
 
-Start at the tier stored in the domain policy cache, defaulting to `STATIC`.
+Start at the tier stored in `source_state.preferred_tier`, defaulting to
+`STATIC`.
 
 Escalate to the next tier when any of these fire:
 
@@ -70,8 +154,9 @@ Do not escalate on 404 or on a clean 200 with real content.
 
 ## Domain policy cache
 
-Keyed by registrable domain. Fields: `preferred_tier`, `learned_at`,
-`ttl_hours` (default 168), `sample_count`.
+Stored in `source_state`, not a separate store. Fields: `preferred_tier`,
+`tier_learned_at`. TTL from `settings.fetch.policy_cache_ttl_hours`
+(default 168).
 
 On a successful fetch at tier N, write N back as `preferred_tier`. On expiry,
 reset to `STATIC` so a site that dropped its protection is not permanently
@@ -79,6 +164,94 @@ paying for a browser.
 
 This cache is why ingestion is feasible at 100K docs. Escalation is discovered
 once per domain, not once per URL.
+
+## Frontier queue
+
+Postgres table, worked with `SELECT ... FOR UPDATE SKIP LOCKED`. No separate
+broker.
+
+```sql
+CREATE TABLE frontier (
+    url_hash         TEXT PRIMARY KEY,       -- sha256 of canonical URL
+    url              TEXT NOT NULL,          -- canonical form
+    source_id        TEXT NOT NULL REFERENCES source(source_id),
+    status           TEXT NOT NULL DEFAULT 'pending',
+                     -- pending | leased | done | dead
+    visible_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    priority         SMALLINT NOT NULL DEFAULT 5,
+    attempts         SMALLINT NOT NULL DEFAULT 0,
+    leased_by        TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    discovered_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX frontier_claimable ON frontier (priority, visible_at)
+    WHERE status = 'pending';
+```
+
+Claim pattern:
+
+```sql
+UPDATE frontier SET status = 'leased', leased_by = $1,
+       lease_expires_at = now() + interval '10 minutes', attempts = attempts + 1
+WHERE url_hash IN (
+    SELECT url_hash FROM frontier
+    WHERE status = 'pending' AND visible_at <= now()
+    ORDER BY priority, visible_at
+    LIMIT $2 FOR UPDATE SKIP LOCKED)
+RETURNING url, source_id;
+```
+
+`SKIP LOCKED` is what makes this safe across concurrent workers without a
+broker. Without it two workers claim the same URL.
+
+`visible_at` is the delayed visibility mechanism. A 429 sets it forward and
+returns the row to `pending`, so the worker moves on instead of sleeping.
+
+A sweeper returns rows whose `lease_expires_at` has passed to `pending`, which
+recovers work from a crashed worker.
+
+**Why Postgres and not Redis or SQS.** The queue is transactional with the
+source registry and the dead letter store, so a claim, a failure write and a
+circuit update are one transaction. It is durable by default and adds no
+infrastructure to a local demo. The honest limit is a few thousand operations
+per second, which is comfortable at 100K documents. At 1M this is the second
+thing to move, after the browser pool, and the target would be Redis Streams
+or SQS with Postgres kept for state.
+
+## Dead letter store
+
+Postgres. Written by `fetch` and by `extract` for `UNSUPPORTED_TYPE`. Read by
+`mcp` and `api` for failure counts.
+
+```sql
+CREATE TABLE dead_letter (
+    url_hash            TEXT PRIMARY KEY,
+    url                 TEXT NOT NULL,
+    source_id           TEXT NOT NULL REFERENCES source(source_id),
+    reason              TEXT NOT NULL,      -- FailureReason
+    stage               TEXT NOT NULL,      -- fetch | extract
+    last_tier           SMALLINT,
+    http_status         SMALLINT,
+    attempts            SMALLINT NOT NULL,
+    detail              TEXT,               -- observed MIME, exception, marker
+    first_failed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_failed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retry_eligible_after TIMESTAMPTZ        -- NULL means do not retry
+);
+
+CREATE INDEX dead_letter_by_source ON dead_letter (source_id, reason);
+```
+
+A dead letter entry is a decision, not a crash. Every row carries the reason
+code that produced it, so `/ingest/status` can report "412 blocked, 89
+unsupported type, 23 robots disallowed" rather than a single failure count.
+
+`retry_eligible_after` allows a manual replay: set it to a timestamp and the
+scheduler will reinsert the row into `frontier`. Nothing does this
+automatically, because automatic retry of a permanently blocked URL is exactly
+the loop this design exists to prevent.
 
 ## Backoff
 

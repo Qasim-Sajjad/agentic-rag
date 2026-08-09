@@ -1,0 +1,29 @@
+# Mechanical enforcement of CLAUDE.md. Conventions a model can forget,
+# a hook cannot.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        additional_dependencies: [pydantic, types-PyYAML]
+
+  - repo: local
+    hooks:
+      - id: no-em-dash
+        name: no em dashes
+        entry: bash -c 'if grep -rn "—" --include="*.py" --include="*.md" .; then echo "em dash found, use a comma or a new sentence"; exit 1; fi'
+        language: system
+        pass_filenames: false
+
+      - id: no-inline-prompts
+        name: no inline prompt strings
+        entry: bash -c 'if grep -rnE "(system_prompt|SYSTEM_PROMPT)\s*=\s*[\"'"'"']" --include="*.py" src/; then echo "prompts belong in src/rag/prompts/, loaded via the registry"; exit 1; fi'
+        language: system
+        pass_filenames: false

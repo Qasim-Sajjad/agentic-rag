@@ -1,0 +1,62 @@
+[project]
+name = "agentic-rag"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorting
+    "N",         # naming
+    "UP",        # pyupgrade
+    "ANN",       # missing type annotations
+    "B",         # bugbear
+    "C90",       # mccabe complexity
+    "PL",        # pylint
+    "SIM",       # simplify
+    "TID",       # tidy imports
+    "RUF",
+    "T20",       # no print
+    "BLE",       # no bare except
+    "ASYNC",     # async correctness
+]
+ignore = ["ANN101", "ANN102", "PLR2004"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.pylint]
+max-statements = 25      # roughly 40 lines. Over this, split the function.
+max-args = 5
+max-branches = 8
+max-returns = 4
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "PLR2004", "PLR0915"]
+"notebooks/*" = ["T20", "ANN", "E402"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "notebooks.*"]
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires the local fixture server",
+    "injection: prompt injection defence suite",
+]

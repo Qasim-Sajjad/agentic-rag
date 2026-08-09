@@ -1,0 +1,23 @@
+# Source registry seed. Loaded by: python -m rag.fetch.bootstrap
+# One entry per source, not per URL. Adding a domain here is a deliberate
+# legal decision, see src/rag/fetch/SPEC.md.
+
+- source_id: sec-edgar
+  domain: sec.gov
+  seed_urls:
+    - "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+  max_tier: 1
+  allow_unlocker: false
+  requests_per_second: 10
+  priority: 1
+  tos_note: "Public data. Fair access policy requires a declared user agent."
+
+- source_id: example-js-portal
+  domain: example.com
+  seed_urls:
+    - "https://example.com/reports"
+  max_tier: 2
+  allow_unlocker: false
+  requests_per_second: 1
+  priority: 5
+  tos_note: "Terms permit non commercial crawling. Browser rendering required."

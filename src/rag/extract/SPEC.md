@@ -62,8 +62,10 @@ PARSER_REGISTRY: dict[str, DocumentParser] = {
 }
 ```
 
-Unknown type returns `UNSUPPORTED_TYPE` to the dead letter store with the
-observed MIME recorded. Extending support is one registry entry.
+Unknown type writes a row to the `dead_letter` table defined in
+`src/rag/fetch/SPEC.md` with `stage = 'extract'`, `reason =
+'unsupported_type'`, and the observed MIME in `detail`. Extending support is
+one registry entry.
 
 ## HTML
 

@@ -67,6 +67,10 @@ The status tool turns "I do not know" into "that source has been unreachable
 for six days, so the corpus does not cover it". It is what makes the low
 confidence branch informative rather than a dead end.
 
+`get_ingest_status` reads `source`, `source_state` and `dead_letter`, all
+defined in `src/rag/fetch/SPEC.md`. `docs_failed` is a count over `dead_letter`
+grouped by reason. This module never writes to any of them.
+
 ## Boundary scoping
 
 What is deliberately not exposed:

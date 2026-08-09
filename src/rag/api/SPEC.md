@@ -77,8 +77,9 @@ Response: {sources: [{source_id, status, circuit_state, last_success_at,
            summary: {total_sources, healthy, degraded, unreachable}}
 ```
 
-Includes sources that failed and sources currently being retried. Reads the same
-store as the MCP `get_ingest_status` tool.
+Includes sources that failed and sources currently being retried. Reads the
+`source` and `source_state` tables defined in `src/rag/fetch/SPEC.md`, the same
+store as the MCP `get_ingest_status` tool. Read only.
 
 ```bash
 curl "localhost:8000/ingest/status?source_id=sec-edgar" -H "X-API-Key: $API_KEY"

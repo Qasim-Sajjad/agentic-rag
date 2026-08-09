@@ -110,16 +110,85 @@ requirement.
 Scale note: 500K x 1024 x 4 bytes is about 2 GB, roughly 500 MB quantized. This
 fits one node. Search is not the scaling problem in this system. Ingestion is.
 
+## Persistence
+
+Two stores, split by access pattern. Qdrant is a derived index, not the source
+of truth.
+
+**`CanonicalDoc` to object storage**, one JSON blob per document at
+`docs/{doc_id}.json`. Large, immutable, almost never queried. Needed only to
+re-chunk without re-scraping.
+
+**Chunks to Postgres**, text inline. Small rows, queried and joined constantly.
+Needed to re-embed without re-extracting.
+
+```sql
+CREATE TABLE document (
+    doc_id            TEXT PRIMARY KEY,
+    source_id         TEXT NOT NULL REFERENCES source(source_id),
+    source_url        TEXT NOT NULL,
+    title             TEXT,
+    published_at      DATE,
+    language          TEXT,
+    doc_type          TEXT NOT NULL,          -- html | pdf | office
+    content_hash      TEXT NOT NULL,
+    canonical_doc_key TEXT NOT NULL,          -- object storage key
+    fetch_tier        SMALLINT NOT NULL,
+    extractor_name    TEXT NOT NULL,
+    extractor_version TEXT NOT NULL,
+    ingested_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX document_content_hash ON document (content_hash);
+
+CREATE TABLE chunk (
+    chunk_id            TEXT PRIMARY KEY,
+    doc_id              TEXT NOT NULL REFERENCES document(doc_id) ON DELETE CASCADE,
+    chunk_index         INT NOT NULL,
+    text                TEXT NOT NULL,        -- chunk content as extracted
+    embed_text          TEXT NOT NULL,        -- section_path prepended, what gets embedded
+    section_path        JSONB NOT NULL,
+    page_no             INT,
+    is_table            BOOLEAN NOT NULL DEFAULT FALSE,
+    token_count         INT NOT NULL,
+    chunk_hash          TEXT NOT NULL,        -- for cross document chunk dedup
+    chunker_version     TEXT NOT NULL,
+    embed_model_version TEXT,                 -- NULL until embedded
+    embedded_at         TIMESTAMPTZ,
+    tenant_id           TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (doc_id, chunk_index)
+);
+
+CREATE INDEX chunk_by_doc ON chunk (doc_id);
+CREATE INDEX chunk_dedup ON chunk (chunk_hash);
+CREATE INDEX chunk_needs_embed ON chunk (embed_model_version)
+    WHERE embed_model_version IS NULL;
+```
+
+`chunk_id` is deterministic:
+`sha256(f"{doc_id}:{chunk_index}:{chunker_version}")[:32]`. Re-running the
+chunker on the same document produces the same ids, so upserts are idempotent
+and a partial ingest can be resumed without duplicating rows.
+
+`embed_text` is stored rather than recomputed. It is what actually goes to the
+embedding model, and storing it means a re-embed backfill is a pure read with
+no chunker logic in the path.
+
+`chunk_needs_embed` is a partial index. It is what the embedding worker polls,
+and it makes "find everything not yet embedded" a fast lookup at 500K rows
+instead of a sequential scan.
+
 ## Re-embed
 
-Prerequisite: `CanonicalDoc` and the chunk table persist outside Qdrant, in
-object storage plus Postgres. The vector store is a derived index, not the
-source of truth.
+Prerequisite: the `document` and `chunk` tables above, plus `CanonicalDoc` in
+object storage.
 
 Given that, swapping models is:
 
 1. Add `dense_v2` as a second named vector on the existing collection
-2. Backfill from stored chunks. No re-scrape, no re-extract
+2. Backfill by streaming `SELECT chunk_id, embed_text FROM chunk`, writing
+   `embed_model_version` on success. No re-scrape, no re-extract
 3. Dual read and compare on the frozen gold set
 4. Cut over by config flag, drop `dense_v1`
 
