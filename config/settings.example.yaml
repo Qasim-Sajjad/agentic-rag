@@ -60,9 +60,12 @@ extract:
   pages_per_task: 50
 
 qdrant:
-  # Set path to run Qdrant in process with no server. Path wins over url.
+  # path runs Qdrant in process with no server and wins over url. It is the
+  # zero infrastructure default, and it is single process: the API and an
+  # ingest run cannot hold it at once. For both at the same time, start the
+  # server with docker compose up -d qdrant and set path to null.
   url: "http://127.0.0.1:6333"
-  path: null
+  path: data/qdrant
   collection: corpus
   timeout_seconds: 30.0
 

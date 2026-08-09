@@ -92,8 +92,8 @@ class ChunkRepository:
             INSERT INTO chunk (chunk_id, doc_id, chunk_index, text, embed_text,
                 section_path, page_no, is_table, token_count, chunk_hash,
                 chunker_version, embed_model_version, embedded_at, tenant_id)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-                    CASE WHEN $12 IS NULL THEN NULL ELSE now() END, $13)
+            VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12::text,
+                    CASE WHEN $12::text IS NULL THEN NULL ELSE now() END, $13)
             ON CONFLICT (chunk_id) DO UPDATE SET
                 text = EXCLUDED.text,
                 embed_text = EXCLUDED.embed_text,

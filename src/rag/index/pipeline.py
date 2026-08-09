@@ -75,7 +75,7 @@ class IngestPipeline:
         self, doc: CanonicalDoc, source_id: str, fetch_tier: int
     ) -> list[Chunk]:
         chunks = self._chunker.chunk(
-            doc, _metadata(doc, source_id, fetch_tier, self._deps.settings)
+            doc, chunk_metadata(doc, source_id, fetch_tier, self._deps.settings)
         )
         known = await self._deps.chunks.known_hashes(
             [chunk.metadata.chunk_hash for chunk in chunks]
@@ -105,7 +105,7 @@ class IngestPipeline:
         return written
 
 
-def _metadata(
+def chunk_metadata(
     doc: CanonicalDoc, source_id: str, fetch_tier: int, settings: IndexSettings
 ) -> ChunkMetadata:
     return ChunkMetadata(
