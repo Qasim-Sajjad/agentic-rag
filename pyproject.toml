@@ -103,6 +103,8 @@ max-returns = 4
 "src/rag/extract/pdf.py" = ["ANN401", "PLC0415"]
 "src/rag/index/embed.py" = ["ANN401", "PLC0415"]
 "src/rag/index/store.py" = ["ANN401", "PLC0415"]
+"src/rag/retrieve/service.py" = ["ANN401", "PLC0415"]
+"src/rag/retrieve/rerank.py" = ["ANN401", "PLC0415"]
 
 [tool.mypy]
 # 3.12 because numpy's bundled stubs use `type` statements that mypy rejects
