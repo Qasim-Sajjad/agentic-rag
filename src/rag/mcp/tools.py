@@ -34,6 +34,8 @@ NEVER_INGESTED = IngestStatusOutput(
     coverage_note="no such source is registered, so the corpus has never covered it",
 )
 
+QUEUE_KEYS = ("pending", "in_flight", "requeued")
+
 
 @dataclass
 class SessionBudget:
@@ -48,6 +50,15 @@ class SessionBudget:
                 f"session call budget of {self.limit} exhausted"
             )
         self.used += 1
+
+
+@dataclass(frozen=True)
+class _Counts:
+    """Collected so `_to_status` stays inside the argument limit."""
+
+    docs_failed: int
+    docs_indexed: int
+    queue: dict[str, int]
 
 
 @dataclass
@@ -104,7 +115,12 @@ class ToolService:
             return NEVER_INGESTED
         state = await self._deps.registry.state(source.source_id)
         failures = await self._deps.dead_letter.counts_by_reason(source.source_id)
-        return self._to_status(source, state, sum(failures.values()))
+        counts = _Counts(
+            docs_failed=sum(failures.values()),
+            docs_indexed=await self._deps.registry.docs_indexed(source.source_id),
+            queue=await self._deps.registry.queue_counts(source.source_id),
+        )
+        return self._to_status(source, state, counts)
 
     async def _resolve(self, request: IngestStatusInput) -> Source | None:
         if request.source_id is not None:
@@ -115,29 +131,32 @@ class ToolService:
         return sources[0] if sources else None
 
     def _to_status(
-        self, source: Source, state: SourceState, docs_failed: int
+        self, source: Source, state: SourceState, counts: _Counts
     ) -> IngestStatusOutput:
-        health = _health(source, state)
+        health = _health(source, state, counts.docs_indexed)
         return IngestStatusOutput(
             source_id=source.source_id,
             status=health,
             circuit_state=state.circuit_state.value,
             last_success_at=state.last_success_at,
             last_failure_reason=state.last_failure_reason,
-            docs_indexed=state.docs_indexed,
-            docs_failed=docs_failed,
-            coverage_note=_coverage_note(health, state),
+            docs_indexed=counts.docs_indexed,
+            docs_failed=counts.docs_failed,
+            pending=counts.queue.get("pending", 0),
+            in_flight=counts.queue.get("in_flight", 0),
+            requeued=counts.queue.get("requeued", 0),
+            coverage_note=_coverage_note(health, state, counts),
         )
 
 
-def _health(source: Source, state: SourceState) -> SourceHealth:
+def _health(source: Source, state: SourceState, docs_indexed: int) -> SourceHealth:
     unreachable = (
         source.status is SourceStatus.UNREACHABLE
         or state.circuit_state is CircuitState.OPEN
     )
     if unreachable:
         return "unreachable"
-    if state.last_success_at is None and state.docs_indexed == 0:
+    if state.last_success_at is None and docs_indexed == 0:
         return "never_ingested"
     degraded = (
         state.consecutive_failures > 0 or state.circuit_state is CircuitState.HALF_OPEN
@@ -145,17 +164,53 @@ def _health(source: Source, state: SourceState) -> SourceHealth:
     return "degraded" if degraded else "healthy"
 
 
-def _coverage_note(health: SourceHealth, state: SourceState) -> str:
+HEALTH_NOTES: dict[str, str] = {
+    "degraded": "this source is failing intermittently, so coverage may be incomplete",
+    "never_ingested": (
+        "this source has never been ingested, so the corpus does not cover it"
+    ),
+    "healthy": "this source is up to date",
+}
+
+
+def _coverage_note(health: SourceHealth, state: SourceState, counts: _Counts) -> str:
     """Written for the responder, which turns it into a sentence for a user."""
     if health == "unreachable":
-        since = state.circuit_opened_at or state.last_failure_at
-        stamp = since.date().isoformat() if since else "an unknown date"
+        return _unreachable_note(state)
+    return _queue_note(counts) or HEALTH_NOTES[health]
+
+
+def _unreachable_note(state: SourceState) -> str:
+    since = state.circuit_opened_at or state.last_failure_at
+    stamp = since.date().isoformat() if since else "an unknown date"
+    return (
+        f"this source has been unreachable since {stamp}, so recent content is missing"
+    )
+
+
+def _queue_note(counts: _Counts) -> str | None:
+    """Queue depth is a coverage caveat, not a health problem.
+
+    A backlog and a running crawl are different claims and must not share a
+    sentence: `in_flight` means a worker holds a lease right now, `pending`
+    means urls are known and unfetched with nothing working on them.
+    """
+    pending = counts.queue.get("pending", 0)
+    in_flight = counts.queue.get("in_flight", 0)
+    requeued = counts.queue.get("requeued", 0)
+    if in_flight:
         return (
-            f"this source has been unreachable since {stamp}, "
-            "so recent content is missing"
+            f"an ingest is running for this source, {in_flight} urls in flight and "
+            f"{pending} still queued, so coverage is changing as you read this"
         )
-    if health == "degraded":
-        return "this source is failing intermittently, so coverage may be incomplete"
-    if health == "never_ingested":
-        return "this source has never been ingested, so the corpus does not cover it"
-    return "this source is up to date"
+    if pending:
+        return (
+            f"{pending} discovered urls are queued and not yet fetched, so the "
+            "corpus does not cover this source completely. No crawl is running"
+        )
+    if requeued:
+        return (
+            f"{requeued} urls are deferred and waiting to retry, usually after "
+            "rate limiting"
+        )
+    return None

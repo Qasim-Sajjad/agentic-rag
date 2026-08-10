@@ -66,6 +66,10 @@ class IngestStatusOutput(BaseModel):
     last_failure_reason: FailureReason | None = None
     docs_indexed: int = 0
     docs_failed: int = 0
+    # Live queue state, so an in progress crawl is visible rather than inferred.
+    pending: int = 0
+    in_flight: int = 0
+    requeued: int = 0
     coverage_note: str = ""
 
 

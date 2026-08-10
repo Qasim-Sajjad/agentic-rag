@@ -82,6 +82,11 @@ class SourceStatusRow(BaseModel):
     last_failure_reason: str | None = None
     docs_indexed: int = 0
     docs_failed: int = 0
+    # Queue state, so an ingest in progress is visible while it runs.
+    pending: int = 0
+    in_flight: int = 0
+    requeued: int = 0
+    coverage_note: str = ""
 
 
 class IngestSummary(BaseModel):

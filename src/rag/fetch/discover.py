@@ -15,7 +15,27 @@ from rag.index.urls import canonicalize
 _HREF = re.compile(r"""href\s*=\s*["']([^"'#\s>]+)["']""", re.IGNORECASE)
 
 SKIP_SCHEMES = ("mailto:", "javascript:", "tel:", "data:")
-SKIP_SUFFIXES = (".zip", ".exe", ".dmg", ".css", ".js", ".png", ".jpg", ".gif", ".svg")
+
+# Assets no parser handles. Following them costs a fetch and buys a dead letter
+# row, which is noise in the failure counts rather than a real coverage gap.
+SKIP_SUFFIXES = (
+    ".zip",
+    ".exe",
+    ".dmg",
+    ".css",
+    ".js",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".mp4",
+    ".webp",
+)
 
 
 def extract_links(

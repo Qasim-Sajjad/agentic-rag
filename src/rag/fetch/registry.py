@@ -150,6 +150,45 @@ class SourceRegistry:
             str(status),
         )
 
+    async def docs_indexed(self, source_id: str) -> int:
+        """Live count from `document` rather than the `source_state` counter.
+
+        The SPEC gives the counter to the index pipeline to increment. Counting
+        instead means it cannot drift, cannot be double counted on a re-ingest,
+        and needs no write path at all. The cost is reading a table `index`
+        owns, which is the smaller of the two problems.
+        """
+        value = await self._db.fetchval(
+            "SELECT count(*) FROM document WHERE source_id = $1", source_id
+        )
+        return int(value or 0)
+
+    async def queue_counts(self, source_id: str) -> dict[str, int]:
+        """Live queue state for a source, so a crawl is observable while it runs.
+
+        `requeued` is the one that matters: a pending row with a future
+        `visible_at` is a URL deliberately deferred, usually by a 429 or by the
+        gap between give up passes. Without it, a rate limited source looks
+        identical to an idle one.
+        """
+        row = await self._db.fetchrow(
+            """
+            SELECT
+                count(*) FILTER (
+                    WHERE status = 'pending' AND visible_at <= now()
+                ) AS pending,
+                count(*) FILTER (
+                    WHERE status = 'pending' AND visible_at > now()
+                ) AS requeued,
+                count(*) FILTER (WHERE status = 'leased') AS in_flight
+            FROM frontier WHERE source_id = $1
+            """,
+            source_id,
+        )
+        if row is None:
+            return {"pending": 0, "requeued": 0, "in_flight": 0}
+        return {key: int(row[key] or 0) for key in ("pending", "requeued", "in_flight")}
+
     async def state(self, source_id: str) -> SourceState:
         row = await self._db.fetchrow(
             f"SELECT {_STATE_COLUMNS} FROM source_state WHERE source_id = $1", source_id

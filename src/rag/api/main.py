@@ -127,14 +127,15 @@ def _register(app: FastAPI) -> None:
         domain: str | None = None,
     ) -> IngestStatusResponse:
         ctx = context_of(http)
-        if source_id or domain:
-            rows = [await _one_status(ctx, source_id, domain)]
-        else:
-            rows = [
-                await _one_status(ctx, s.source_id, None)
-                for s in await ctx.registry.list_all()
-            ]
-        return IngestStatusResponse(sources=rows, summary=_summarise(rows))
+        everything = [
+            await _one_status(ctx, source.source_id, None)
+            for source in await ctx.registry.list_all()
+        ]
+        rows = await _filtered(ctx, everything, source_id, domain)
+        # The summary always describes the corpus, never the filtered rows.
+        # Reporting total_sources as the number of rows returned makes a
+        # filtered request look like a one source corpus.
+        return IngestStatusResponse(sources=rows, summary=_summarise(everything))
 
 
 def _ask_cache_key(ctx: AppContext, request: AskRequest, tenant: str) -> str:
@@ -167,7 +168,27 @@ async def _one_status(
         ),
         docs_indexed=status.docs_indexed,
         docs_failed=status.docs_failed,
+        pending=status.pending,
+        in_flight=status.in_flight,
+        requeued=status.requeued,
+        coverage_note=status.coverage_note,
     )
+
+
+async def _filtered(
+    ctx: AppContext,
+    rows: list[SourceStatusRow],
+    source_id: str | None,
+    domain: str | None,
+) -> list[SourceStatusRow]:
+    """A filter narrows which sources are listed, never what the summary counts."""
+    wanted = source_id
+    if wanted is None and domain is not None:
+        source = await ctx.registry.by_domain(domain)
+        wanted = source.source_id if source is not None else domain
+    if wanted is None:
+        return rows
+    return [row for row in rows if row.source_id == wanted]
 
 
 def _summarise(rows: list[SourceStatusRow]) -> IngestSummary:
