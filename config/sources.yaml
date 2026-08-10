@@ -2,16 +2,52 @@
 # One entry per source, not per URL. Adding a domain here is a deliberate
 # legal decision, see src/rag/fetch/SPEC.md.
 #
-# SEC requires a declared user agent with a real contact address. Set
-# fetch.user_agent in config/settings.yaml before crawling this source.
+# Deliberately spread across scraping difficulty, so the fetch ladder is
+# exercised rather than assumed:
+#
+#   books.toscrape.com   static HTML, product tables      tier 1
+#   quotes.toscrape.com  static HTML, short prose         tier 1
+#   quotes.toscrape.com/js  the same site rendered client side, which is what
+#                           escalates it to tier 2
+#   arxiv.org            real PDFs, multi column, tables  tier 1, slow
 
-- source_id: sec-edgar
-  domain: www.sec.gov
+- source_id: books-toscrape
+  domain: books.toscrape.com
   seed_urls:
-    - "https://www.sec.gov/cgi-bin/srqsb?text=form-type%3D10-K"
-    - "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
-  max_tier: 1
+    - "https://books.toscrape.com/"
+    - "https://books.toscrape.com/catalogue/category/books_1/index.html"
+  max_tier: 2
   allow_unlocker: false
   requests_per_second: 5
+  priority: 2
+  tos_note: "Sandbox site published for scraping practice. No restrictions."
+
+- source_id: quotes-toscrape
+  domain: quotes.toscrape.com
+  seed_urls:
+    - "https://quotes.toscrape.com/"
+    - "https://quotes.toscrape.com/page/2/"
+    - "https://quotes.toscrape.com/js/"
+  max_tier: 3
+  allow_unlocker: false
+  requests_per_second: 5
+  priority: 2
+  tos_note: "Sandbox site published for scraping practice. The /js path renders client side, which is what escalates it to tier 2."
+
+# PDFs, which is what exercises the extract ladder: text layer probe, layout
+# probe, page range splitting and the table merge fixup. A PDF yields no links,
+# so this source grows only by adding seeds here.
+- source_id: arxiv-pdf
+  domain: arxiv.org
+  seed_urls:
+    - "https://arxiv.org/pdf/2509.05378v3"
+    - "https://arxiv.org/pdf/1706.03762"
+    - "https://arxiv.org/pdf/2005.11401"
+    - "https://arxiv.org/pdf/2004.04906"
+    - "https://arxiv.org/pdf/1810.04805"
+    - "https://arxiv.org/pdf/2307.09288"
+  max_tier: 1
+  allow_unlocker: false
+  requests_per_second: 0.5
   priority: 1
-  tos_note: "Public data. Fair access policy requires a declared user agent."
+  tos_note: "Open access papers. arXiv asks bulk users to use its S3 access, so this stays a handful of seeds at a low rate rather than a crawl."

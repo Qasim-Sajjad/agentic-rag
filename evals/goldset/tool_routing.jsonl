@@ -1,0 +1,30 @@
+{"expected_tools": ["search_corpus"], "qid": "r000", "question": "What does the corpus say about 1,000 Places to See Before You Die?"}
+{"expected_tools": ["search_corpus"], "qid": "r001", "question": "Summarise what we have on A Flight of Arrows (The Pathfinders #2)."}
+{"expected_tools": ["search_corpus"], "qid": "r002", "question": "Find passages about A Light in the Attic."}
+{"expected_tools": ["search_corpus"], "qid": "r003", "question": "What does the corpus say about A Murder in Time?"}
+{"expected_tools": ["search_corpus"], "qid": "r004", "question": "Summarise what we have on A Paris Apartment."}
+{"expected_tools": ["search_corpus"], "qid": "r005", "question": "Find passages about A Study in Scarlet (Sherlock Holmes #1)."}
+{"expected_tools": ["search_corpus"], "qid": "r006", "question": "What does the corpus say about A Summer In Europe?"}
+{"expected_tools": ["search_corpus"], "qid": "r007", "question": "Summarise what we have on A Time of Torment (Charlie Parker #14)."}
+{"expected_tools": ["search_corpus"], "qid": "r008", "question": "Find passages about A Year in Provence (Provence #1)."}
+{"expected_tools": ["search_corpus"], "qid": "r009", "question": "What does the corpus say about Add a comment?"}
+{"expected_tools": ["search_corpus"], "qid": "r010", "question": "Summarise what we have on Adult Fiction."}
+{"expected_tools": ["search_corpus"], "qid": "r011", "question": "Find passages about All products."}
+{"expected_tools": ["search_corpus"], "qid": "r012", "question": "What does the corpus say about Autobiography?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r100", "question": "Is the arxiv-pdf source up to date?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r101", "question": "Has the books-toscrape crawl been failing recently?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r102", "question": "How many documents have we indexed from quotes-toscrape?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r103", "question": "Is arxiv-pdf currently reachable?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r104", "question": "When did we last successfully fetch anything from books-toscrape?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r105", "question": "Are any of our sources blocked right now?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r106", "question": "How many documents failed to ingest?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r107", "question": "Which sources are unreachable?"}
+{"expected_tools": ["answer_directly"], "qid": "r200", "question": "Hello, what can you help me with?"}
+{"expected_tools": ["answer_directly"], "qid": "r201", "question": "What kind of questions can you answer?"}
+{"expected_tools": ["answer_directly"], "qid": "r202", "question": "Can you search documents for me?"}
+{"expected_tools": ["answer_directly"], "qid": "r203", "question": "What is 17 plus 25?"}
+{"expected_tools": ["answer_directly"], "qid": "r204", "question": "Thanks, that is all for now."}
+{"expected_tools": ["answer_directly"], "qid": "r205", "question": "Who are you?"}
+{"expected_tools": ["answer_directly"], "qid": "r206", "question": "Explain what you do in one sentence."}
+{"expected_tools": ["search_corpus", "get_ingest_status"], "qid": "r300", "question": "Do we have anything on quantum computing?"}
+{"expected_tools": ["get_ingest_status", "search_corpus"], "qid": "r301", "question": "Why did that search return nothing?"}

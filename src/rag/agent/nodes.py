@@ -86,9 +86,17 @@ async def _plan_from_llm(
 
 
 def _parse_plan(completion: Completion, question: str) -> tuple[Plan, str | None]:
-    """A malformed plan falls back to search rather than failing the request."""
+    return parse_plan_text(completion.text, question)
+
+
+def parse_plan_text(text: str, question: str) -> tuple[Plan, str | None]:
+    """A malformed plan falls back to search rather than failing the request.
+
+    Public because the routing eval scores the router in isolation, and it must
+    parse exactly the way the graph does or it measures the parser instead.
+    """
     try:
-        plan = Plan.model_validate_json(_strip_fence(completion.text))
+        plan = Plan.model_validate_json(_strip_fence(text))
     except (ValidationError, ValueError) as exc:
         fallback = Plan(tool="search_corpus", query=question, reason="unparsable plan")
         return fallback, f"router output invalid: {exc}"
@@ -165,7 +173,9 @@ async def responder(state: AgentState, deps: NodeDependencies) -> AgentState:
     prompt = deps.prompts.get("rag_answer")
     nonce = new_nonce()
     rendered = render_context(state["chunks"], nonce)
-    user = assemble(prompt.text, rendered, state["question"])
+    user = _with_operational_facts(
+        assemble(prompt.text, rendered, state["question"]), state
+    )
     outcome = await _answer_with_one_repair(deps, prompt.text, user, state)
     _apply(state, outcome)
     state["trace"].append(
@@ -178,6 +188,23 @@ async def responder(state: AgentState, deps: NodeDependencies) -> AgentState:
         )
     )
     return state
+
+
+def _with_operational_facts(user: str, state: AgentState) -> str:
+    """Adds what `get_ingest_status` returned, outside the document container.
+
+    Crawler state is our own data, not scraped text, so it is stated as trusted
+    fact rather than wrapped in a nonce delimited doc. Without this the
+    responder is handed zero documents for a status question and correctly says
+    it cannot answer, which is a useless answer to a question we can answer.
+    """
+    note = state.get("coverage_note")
+    error = state.get("error")
+    if not note and not error:
+        return user
+    facts = [line for line in (note, error) if line]
+    joined = "\n".join(f"- {line}" for line in facts)
+    return f"{user}\n\n<system_facts>\n{joined}\n</system_facts>"
 
 
 async def _answer_with_one_repair(
@@ -205,7 +232,7 @@ async def _try_once(
         )
     except LLMUnavailableError as exc:
         return ValidationOutcome(None, str(exc), _report(repairs))
-    return validate(_strip_fence(completion.text), retrieved, repairs)
+    return validate(completion.text, retrieved, repairs)
 
 
 def _report(repairs: int) -> ValidationReport:

@@ -53,6 +53,19 @@ class ValidationOutcome:
         return self.payload is not None and self.error is None
 
 
+def strip_fence(text: str) -> str:
+    """Drop a markdown code fence around model output.
+
+    Models wrap JSON in ```json blocks whatever the prompt says. Parsing that
+    as-is fails, burns the one repair turn, and doubles cost on every call, so
+    this runs before validation on every path rather than on some of them.
+    """
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+    return cleaned.strip()
+
+
 def parse_payload(raw: str) -> tuple[AnswerPayload | None, str | None]:
     try:
         return AnswerPayload.model_validate_json(raw), None
@@ -68,7 +81,7 @@ def unresolved_markers(answer: str, retrieved_ids: set[str]) -> list[str]:
 
 def validate(raw: str, retrieved_ids: set[str], repairs: int = 0) -> ValidationOutcome:
     """Schema, then citations, then inline markers. Order is cheapest first."""
-    payload, error = parse_payload(raw)
+    payload, error = parse_payload(strip_fence(raw))
     if payload is None:
         return ValidationOutcome(None, error, ValidationReport(repair_attempts=repairs))
     rejected = [c for c in payload.citations if c.chunk_id not in retrieved_ids]

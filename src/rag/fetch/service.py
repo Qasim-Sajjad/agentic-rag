@@ -342,10 +342,20 @@ def _transport_attempt(
     return Attempt(Action.RETRY, failure=_failure(url, tier, reason, detail))
 
 
-def _escalate_after_exhaustion(last: FetchFailure | None) -> bool:
-    """A tier that ran out of retries usually escalates. Rate limiting does not.
+#: Reasons that a more expensive tier cannot fix, so exhausting a tier on one
+#: of them ends the climb instead of continuing it.
+_NO_ESCALATION = frozenset(
+    {
+        # The server said "slower", not "prove you are a browser". Paying 2 to
+        # 10 seconds for a rendered tier just collects the same 429.
+        FailureReason.RATE_LIMITED,
+        # A broken server is broken at every tier.
+        FailureReason.SERVER_ERROR,
+    }
+)
 
-    A 429 is the server saying "slower", not "prove you are a browser". Paying
-    2 to 10 seconds for a rendered tier just collects the same 429.
-    """
-    return last is None or last.reason is not FailureReason.RATE_LIMITED
+
+def _escalate_after_exhaustion(last: FetchFailure | None) -> bool:
+    """A tier that ran out of retries escalates, unless nothing up the ladder
+    would help. A timeout still escalates: a slow page may well render."""
+    return last is None or last.reason not in _NO_ESCALATION

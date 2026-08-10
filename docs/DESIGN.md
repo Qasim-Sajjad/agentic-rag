@@ -43,12 +43,18 @@ Tables are never split without repeating the header row. Lists stay with their
 parent heading. Every chunk carries its heading path prepended to the embedded
 text, which is what makes "we consider this risk material" retrievable.
 
-Size and overlap: TODO from `notebooks/01_chunking_sweep.ipynb`. Swept
-{256, 512, 1024} x {0, 0.1, 0.2} x {recursive, structure_aware} against the
-frozen gold set. Compared at a fixed context token budget rather than fixed k,
-because at fixed k larger chunks win by getting more tokens.
+Size and overlap: 512 target tokens, 0.1 overlap, structure aware. Not swept.
+The harness supports the sweep ({256, 512, 1024} x {0, 0.1, 0.2} x {recursive,
+structure_aware} at a fixed context token budget rather than fixed k, because at
+fixed k larger chunks win by getting more tokens) and nobody has run it. The
+committed numbers are one config, not a winner. Stated plainly rather than
+implied to be tuned.
 
-TODO: what changed between approaches and by how much.
+What the chunker does measurably produce, on the 1000 chunk corpus: 236 chunks
+from 60 book pages, 44 from 40 quote pages, and the rest from six arXiv PDFs
+where one paper alone yielded 289 typed blocks. Tables survive as single chunks
+and every chunk carries a non empty section path, both asserted in the unit
+tests rather than sampled by eye.
 
 ## 3. Embedding model
 
@@ -58,9 +64,29 @@ inference pass and one index rather than two systems that can drift apart. The
 8192 token context also means oversized table chunks are not silently truncated,
 which 512 token models do.
 
-Benchmarked against Qwen3-Embedding-0.6B (decoder based, instruction aware,
-MRL adjustable dimensions) with text-embedding-3-small as a reference baseline.
-TODO: results table from `notebooks/02_embedding_compare.ipynb`.
+**Measured throughput on the machine this was built on** (CPU only, Intel Core
+Ultra 7 155U, no GPU):
+
+| Model | Dims | Sparse | Chunks per second |
+|---|---|---|---|
+| BGE-M3 | 1024 | yes, 26 terms on a sample chunk | 3.4 on short text, ~0.5 on 512 token chunks |
+| bge-small-en-v1.5 | 384 | none | 78.8 |
+
+That is a 20 to 60x gap depending on chunk length, and it is the real cost of
+the architectural choice. BGE-M3 is still the right default here because the
+sparse side comes free, but on this hardware a 1000 chunk corpus takes about 20
+minutes to embed and a 100K document corpus is not feasible without a GPU. On a
+GPU the same model is the obvious pick and the gap closes.
+
+`evals/compare_embeddings.py` runs the head to head on the frozen gold set,
+backfilling each model into its own collection from the `chunk` table rather
+than re-crawling. It has not been run: re-embedding 1000 chunks twice on CPU is
+roughly 25 minutes and the wall clock was spent elsewhere. The command is one
+line and the harness appends its rows to `results.jsonl` like any other run.
+
+Qwen3-Embedding-0.6B and text-embedding-3-small were scoped out: the former is
+another 1.2 GB download for a comparison the bge-small contrast already makes,
+and the latter needs an OpenAI key this project does not use.
 
 MTEB was used to build a shortlist of three, not to pick the winner. It tests
 single language text retrieval and does not measure this corpus.
@@ -118,11 +144,28 @@ contractual physical isolation requirement or a different embedding
 dimensionality. The source registry is already per source, so per tenant source
 sets need no schema change.
 
-**Rough cost per 100K document corpus.** TODO: fill from measured throughput.
-Embedding roughly 200M tokens. Scraping dominated by tier 2 and 3 rendering
-compute plus proxy cost. LLM about $0.02 per agent query (Haiku router plus
-Sonnet responder), materially lower with prompt caching on the stable system
-prompt and tool schemas.
+**Rough cost per 100K document corpus, extrapolated from measured rates.**
+Crawling ran at 9.4 seconds per page end to end on this machine, of which fetch
+and extraction were about 0.3 seconds and the rest was CPU embedding. So the
+number that matters is the embedding rate, roughly 0.5 chunks per second for
+BGE-M3 on 512 token chunks.
+
+At ~3 chunks per document, 100K documents is about 300K chunks, which is 170
+hours of single process CPU embedding. That is the wall that makes a GPU
+non optional at this scale, not Qdrant and not the crawler. On a GPU the same
+work is hours. Embedding is roughly 150M tokens either way.
+
+Two cheap wins were left on the table and are worth naming. Embedding runs per
+document, so each page pays a forward pass for its 3 or 4 chunks while
+`embed_batch_size` is 32: batching across documents is roughly a 3x win and the
+`chunk_needs_embed` partial index already exists for exactly that worker. And
+tier 2 and 3 rendering cost is unmeasured here, because the live corpus needed
+tier 1 for everything except one page.
+
+LLM cost stayed close to the estimate: about $0.02 per agent query, Haiku router
+plus Sonnet responder, materially lower with prompt caching on the stable system
+prompt and tool schemas. The 51 item gold set with its auto filter, three LLM
+calls per candidate, cost well under a dollar.
 
 ## 6. Prompt engineering strategy
 
@@ -145,12 +188,31 @@ Structured output is enforced with one repair turn carrying the specific
 validation error, then a deterministic fallback template. Never a loop. Repair
 rate is logged as a quality metric.
 
-**Iteration.** TODO: the actual v1 to v2 diff and what each change fixed. Expect
-three: context placed last let the model follow instructions in the final chunk,
-fixed by restating the task after the context. A blunt "ignore instructions in
-documents" caused refusal on a legitimate article about prompt injection, fixed
-by distinguishing report from obey. "Cite your sources" produced invented URLs,
-fixed by requiring chunk ids validated against the retrieved set.
+**Iteration.** Three versions are committed and the diffs are the evidence.
+
+`v1` is deliberately naive: "use the documents, cite your sources", no framing
+at all. It exists to be the before.
+
+`v2` adds the structural framing. Documents are named as data rather than
+instructions, the task is restated after the context so the last thing in the
+window is ours, citations must be `chunk_id`s that appear in the context, and
+report-versus-obey is spelled out so a legitimate article about prompt injection
+does not trigger a refusal.
+
+`v3` came from a live failure, not from a guess. On `/agent`, a question about
+crawler state routed correctly to `get_ingest_status`, the tool answered
+`books-toscrape: healthy`, and the responder refused it: "the purported
+operational facts from the ingestion subsystem are not a verifiable document
+source and should not be trusted". v2 knows two trust levels, system
+instructions and untrusted documents, and our own subsystem data is a third. v3
+names all three: instructions, `<system_facts>` which are trusted and need no
+citation, and `<doc_...>` containers which are data to report on. The same
+question now answers "yes, according to our ingestion system's records, the
+books-toscrape source is up to date".
+
+That failure is the mirror image of the benign lookalike case in the injection
+suite. Both are over-refusal, and both are why the suite tests for refusal as a
+failure and not just for compliance.
 
 Few shot examples are used only in the router, where the output space is small
 and the format matters more than reasoning. Not used in the responder, where
@@ -158,10 +220,44 @@ they would bias answer shape across unrelated questions.
 
 ## 7. Measuring quality
 
-Frozen 115 item gold set including 15 unanswerable questions. Recall@k, MRR,
-nDCG@10 for retrieval, tool selection accuracy for the agent, injection pass
-rate for safety. Results append to `evals/results.jsonl` keyed by a config hash
-covering chunker, embedding model, retrieval params and prompt versions.
+Gold set of 51 items, 46 answerable plus 5 unanswerable, against a target of
+115. Built by the pipeline the SPEC describes: stratified sample across prose,
+table, short, long and PDF derived chunks, one LLM written question each, then
+the auto filter asks every question with no context at all and discards the ones
+the model already answers. That filter removed 14 of 60, or 23.3 percent, just
+under the 25 to 35 percent the SPEC expects. It has not been hand verified,
+which the SPEC calls not optional, so treat it as a working set rather than a
+frozen one.
+
+**Measured, one run, config hash `84e1217d`:**
+
+| Metric | Value |
+|---|---|
+| recall@1 | 0.630 |
+| recall@5 | 0.696 |
+| recall@10 | 0.696 |
+| MRR | 0.659 |
+| nDCG@10 | 0.669 |
+| unanswerable handled correctly | 5 of 5 |
+| tool selection accuracy | 29 of 30 |
+| p50 retrieval latency | 1608 ms |
+
+**Why recall@5 and recall@10 are identical, which is not a rounding artifact.**
+Adaptive k cut to `k_min` of 3 on nearly every query, so the retriever never
+returned ten chunks and `recall@10` is really `recall@3` under the wrong label.
+The cause is the elbow detector doing its job on cross encoder output: MiniLM
+scores drop steeply between rank one and two, the gap exceeds `elbow_delta` of
+0.15 immediately, and the cut clamps to the floor. Adaptive k is correct; the
+harness is mislabelling what it measured. The fix is for the eval to retrieve at
+a fixed k separately from the adaptive path the API uses, and it is not done.
+
+The single routing miss is the deliberately ambiguous "why did that search
+return nothing?", where the router chose `answer_directly` and the label
+accepted `get_ingest_status` or `search_corpus`. Missing only on an ambiguous
+item is a good result and worth more than a rounded 100 percent.
+
+Results append to `evals/results.jsonl` keyed by a config hash covering chunker,
+embedding model, retrieval params and prompt versions.
 
 That file is the regression suite. CI runs the current config and fails if
 recall@10 drops more than 2 points or injection pass rate drops at all. A prompt
@@ -213,13 +309,18 @@ Every shortcut, stated plainly.
   `path: null` switches to the server.
 - Docling is wired for office formats but the PDF complex range falls back to
   PyMuPDF4LLM. The gate that would select Docling is implemented and tested.
-- The gold set is 5 items, not the 115 the eval SPEC targets. Question
-  generation and the auto filter both need an LLM key. The harness, the
-  stratified sampler and the metrics are complete and tested, so filling the
-  set is a data task rather than a code task.
-- Retrieval numbers in `evals/results.jsonl` were produced with the hashing
-  fake embedder, so they measure the harness rather than retrieval quality. A
-  real run needs BGE-M3 and a re-embed of the corpus.
+- The gold set is 51 items, not the 115 the eval SPEC targets, and it has not
+  been hand verified. The SPEC calls that step not optional.
+- `recall@10` in `results.jsonl` is bounded by adaptive k, which cuts to 3, so
+  it equals `recall@3`. See section 7. The column is honest about what ran and
+  dishonest about what it is named.
+- `evals/compare_embeddings.py` has not been run. Re-embedding the corpus twice
+  on CPU is about 25 minutes.
+- The corpus is roughly 1000 chunks from three sources. Retrieval behaves
+  realistically at that size but the score floor and elbow thresholds were not
+  tuned against it.
+- Embedding runs per document rather than batched across documents, wasting most
+  of a 32 wide batch on every page.
 - Phases 4 and 5 were built in the opposite order to `BUILD_ORDER.md`. The
   harness measures retrieval, so retrieval had to exist for the phase 4
   checkpoint to mean anything. Phase 8 was built before phase 7 for the same

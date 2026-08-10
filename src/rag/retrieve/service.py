@@ -43,13 +43,22 @@ class SearchService:
         top_k: int | None = None,
     ) -> SearchResult:
         started = time.monotonic()
-        embedding = (await self._deps.embedder.embed([query]))[0]
+        embedding = (await self._embed_query(query))[0]
         dense, sparse = await self._both_sides(embedding, filters)
         fused = reciprocal_rank_fusion([dense, sparse], self._settings.rrf_k)
         reranked = await self._deps.reranker.rerank(
             query, fused[: self._settings.rerank_pool]
         )
         return self._finish(reranked, top_k, started)
+
+    async def _embed_query(self, query: str) -> list[Any]:
+        """Some models want an instruction prefix on queries and not on
+        documents. An embedder that needs the asymmetry exposes
+        `embed_queries`, and getting it wrong silently destroys recall."""
+        asymmetric = getattr(self._deps.embedder, "embed_queries", None)
+        if asymmetric is not None:
+            return list(await asymmetric([query]))
+        return list(await self._deps.embedder.embed([query]))
 
     async def _both_sides(
         self, embedding: Any, filters: SearchFilters | None

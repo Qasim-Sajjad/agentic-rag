@@ -98,7 +98,7 @@ async def _once(
         return ValidationOutcome(
             None, str(exc), ValidationReport(repair_attempts=repairs)
         )
-    return validate(completion.text.strip(), retrieved, repairs)
+    return validate(completion.text, retrieved, repairs)
 
 
 def _respond(

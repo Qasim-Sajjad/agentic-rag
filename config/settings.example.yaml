@@ -1,4 +1,4 @@
-# Copy to config/settings.yaml. Env vars override with RAG__ prefix.
+﻿# Copy to config/settings.yaml. Env vars override with RAG__ prefix.
 # Nested keys use a double underscore: RAG__FETCH__MIN_TEXT_CHARS=400.
 # Anything a reviewer might change without editing code belongs here.
 # When config/settings.yaml is absent this file is loaded instead, so a clean
@@ -77,6 +77,7 @@ index:
   embed_batch_size: 32
   embed_model: BAAI/bge-m3
   embed_dims: 1024
+  embed_max_length: 1024   # chunks target 512 tokens, so 8192 is wasted padding
   tenant_id: default
 
 retrieve:
@@ -101,7 +102,7 @@ llm:
   # api_key comes from ANTHROPIC_API_KEY in .env, never from this file.
   router_model: claude-haiku-4-5-20251001
   responder_model: claude-sonnet-5
-  judge_model: claude-opus-5
+  judge_model: claude-sonnet-5 # For Now because of Costing
   max_tokens: 2048
   temperature: 0.0
   timeout_seconds: 60.0
@@ -116,3 +117,4 @@ api:
   explain_enabled: false
   cache_ttl_seconds: 300
   embed_cache_ttl_seconds: 3600
+

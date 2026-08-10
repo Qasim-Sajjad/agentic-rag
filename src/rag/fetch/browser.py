@@ -141,8 +141,14 @@ class StealthFetcher:
 async def _render(
     pool: BrowserPool, url: str, timeout: float, tier: FetchTier
 ) -> FetchResult:
-    lease = await pool.page()
+    """Launching the browser is inside the try on purpose.
+
+    A missing or stale browser binary is an environment problem, but it must
+    still arrive as a typed transport failure. Letting a Playwright error
+    escape kills the whole crawl instead of dead lettering one URL.
+    """
     try:
+        lease = await pool.page()
         async with lease as page:
             response = await _goto(page, url, timeout)
             body = await page.content()

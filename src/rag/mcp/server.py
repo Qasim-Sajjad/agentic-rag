@@ -13,7 +13,7 @@ from rag.config.settings import Settings, get_settings
 from rag.db.pool import Database
 from rag.fetch.deadletter import DeadLetterStore
 from rag.fetch.registry import SourceRegistry
-from rag.index.embed import BGEM3Embedder, Embedder, FakeEmbedder
+from rag.index.embed import Embedder, build_embedder
 from rag.index.store import QdrantStore
 from rag.log import configure_logging, get_logger
 from rag.mcp.schemas import (
@@ -23,7 +23,7 @@ from rag.mcp.schemas import (
     SearchCorpusOutput,
 )
 from rag.mcp.tools import ToolDependencies, ToolService
-from rag.retrieve.rerank import IdentityReranker, MiniLMReranker
+from rag.retrieve.rerank import MiniLMReranker
 from rag.retrieve.service import RetrieveDependencies, SearchService
 from rag.retrieve.types import Reranker
 
@@ -32,18 +32,10 @@ log = get_logger(__name__)
 SERVER_NAME = "agentic-rag"
 
 
-def build_tool_service(
-    db: Database, settings: Settings | None = None, fake_models: bool = False
-) -> ToolService:
+def build_tool_service(db: Database, settings: Settings | None = None) -> ToolService:
     resolved = settings if settings is not None else get_settings()
-    embedder: Embedder = (
-        FakeEmbedder()
-        if fake_models
-        else BGEM3Embedder(resolved.index, resolved.index.embed_model)
-    )
-    reranker: Reranker = (
-        IdentityReranker() if fake_models else MiniLMReranker(resolved.retrieve)
-    )
+    embedder: Embedder = build_embedder(resolved.index)
+    reranker: Reranker = MiniLMReranker(resolved.retrieve)
     store = QdrantStore(resolved.qdrant)
     search = SearchService(
         RetrieveDependencies(

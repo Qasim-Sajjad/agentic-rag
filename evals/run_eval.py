@@ -23,11 +23,15 @@ from evals.metrics import (
     reciprocal_rank,
     unanswerable_accuracy,
 )
+from evals.routing import load_routing
+from evals.routing import score as score_routing
+from rag.agent.llm import AnthropicClient
 from rag.config.settings import Settings, get_settings
-from rag.index.embed import BGEM3Embedder, Embedder, FakeEmbedder
+from rag.index.embed import Embedder, build_embedder
 from rag.index.store import QdrantStore
 from rag.log import configure_logging, get_logger
-from rag.retrieve.rerank import IdentityReranker, MiniLMReranker
+from rag.prompts.registry import PromptRegistry
+from rag.retrieve.rerank import MiniLMReranker
 from rag.retrieve.service import RetrieveDependencies, SearchService
 from rag.retrieve.types import Reranker
 
@@ -103,17 +107,9 @@ def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 4) if values else 0.0
 
 
-def build_service(
-    settings: Settings, fake: bool
-) -> tuple[SearchService, Embedder, Reranker]:
-    embedder: Embedder = (
-        FakeEmbedder()
-        if fake
-        else BGEM3Embedder(settings.index, settings.index.embed_model)
-    )
-    reranker: Reranker = (
-        IdentityReranker() if fake else MiniLMReranker(settings.retrieve)
-    )
+def build_service(settings: Settings) -> tuple[SearchService, Embedder, Reranker]:
+    embedder: Embedder = build_embedder(settings.index)
+    reranker: Reranker = MiniLMReranker(settings.retrieve)
     store = QdrantStore(settings.qdrant)
     service = SearchService(
         RetrieveDependencies(
@@ -137,7 +133,7 @@ def append_row(row: dict[str, Any], path: Path = RESULTS_FILE) -> None:
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     settings = get_settings()
     items = load_goldset(Path(args.goldset))
-    service, embedder, reranker = build_service(settings, args.fake_models)
+    service, embedder, reranker = build_service(settings)
     metrics = await evaluate(service, items)
     row = {
         "run_id": args.run_id,
@@ -147,11 +143,32 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "overlap": settings.index.overlap_ratio,
         "embed_model": embedder.model_name,
         "reranker": reranker.name,
+        "prompt_version": PromptRegistry().get("router").identifier,
         **metrics,
+        **(await _routing_metrics(settings, args.skip_routing)),
     }
     append_row(row, Path(args.results))
     log.info("eval complete", **{k: v for k, v in row.items() if k != "run_id"})
     return row
+
+
+async def _routing_metrics(settings: Settings, skip: bool) -> dict[str, Any]:
+    """Tool selection accuracy, absent rather than zero when not measured.
+
+    A missing metric and a metric that scored zero mean opposite things, and a
+    results file that conflates them is worse than one that omits the column.
+    """
+    if skip:
+        return {}
+    items = load_routing()
+    if not items:
+        return {}
+    return await score_routing(
+        AnthropicClient(settings.llm),
+        PromptRegistry(),
+        items,
+        settings.llm.router_model,
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -160,9 +177,9 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--results", default=str(RESULTS_FILE))
     root.add_argument("--run-id", default="manual")
     root.add_argument(
-        "--fake-models",
+        "--skip-routing",
         action="store_true",
-        help="hashing embedder and no reranker, for harness smoke tests",
+        help="retrieval metrics only, no router LLM calls",
     )
     return root
 

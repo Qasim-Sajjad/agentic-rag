@@ -8,10 +8,46 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import asyncpg
 
 from rag.db.pool import Database
-from rag.extract.types import CanonicalDoc
-from rag.index.types import Chunk
+from rag.extract.types import CanonicalDoc, DocType
+from rag.index.types import Chunk, ChunkMetadata
+
+
+def _to_chunk(row: asyncpg.Record) -> Chunk:
+    section_path = row["section_path"]
+    return Chunk(
+        chunk_id=row["chunk_id"],
+        doc_id=row["doc_id"],
+        chunk_index=row["chunk_index"],
+        text=row["text"],
+        embed_text=row["embed_text"],
+        token_count=row["token_count"],
+        metadata=ChunkMetadata(
+            doc_type=DocType(row["doc_type"]),
+            domain=urlsplit(row["source_url"]).netloc.lower(),
+            source_id=row["source_id"],
+            published_at=row["published_at"],
+            language=row["language"] or "en",
+            is_table=row["is_table"],
+            fetch_tier=row["fetch_tier"],
+            tenant_id=row["tenant_id"],
+            source_url=row["source_url"],
+            title=row["title"],
+            section_path=json.loads(section_path)
+            if isinstance(section_path, str)
+            else list(section_path or []),
+            page_no=row["page_no"],
+            content_hash=row["content_hash"],
+            chunk_hash=row["chunk_hash"],
+            extractor_name=row["extractor_name"],
+            extractor_version=row["extractor_version"],
+            chunker_version=row["chunker_version"],
+        ),
+    )
 
 
 class DocumentRepository:
@@ -118,3 +154,25 @@ class ChunkRepository:
     async def count(self) -> int:
         value = await self._db.fetchval("SELECT count(*) FROM chunk")
         return int(value or 0)
+
+    async def all_chunks(self, limit: int | None = None) -> list[Chunk]:
+        """Rebuilds `Chunk` objects from the tables, for a re-embed backfill.
+
+        This is the whole reason chunks are persisted with `embed_text`: a
+        model swap streams from here instead of re-scraping the web, which is
+        hours rather than weeks and returns the same content.
+        """
+        rows = await self._db.fetch(
+            f"""
+            SELECT c.chunk_id, c.doc_id, c.chunk_index, c.text, c.embed_text,
+                   c.section_path, c.page_no, c.is_table, c.token_count,
+                   c.chunk_hash, c.chunker_version, c.tenant_id,
+                   d.doc_type, d.source_url, d.title, d.published_at,
+                   d.language, d.source_id, d.content_hash, d.fetch_tier,
+                   d.extractor_name, d.extractor_version
+            FROM chunk c JOIN document d ON d.doc_id = c.doc_id
+            ORDER BY c.chunk_id
+            {"LIMIT " + str(int(limit)) if limit else ""}
+            """
+        )
+        return [_to_chunk(row) for row in rows]

@@ -41,7 +41,11 @@ uv run python -m rag.demo ingest-snippet path/to/page.html --url https://demo.lo
 ```
 
 ```bash
-uv run python -m rag.demo ingest https://www.sec.gov/some/filing.htm --source-id sec-edgar
+uv run python -m rag.demo ingest https://books.toscrape.com/ --source-id books-toscrape
+```
+
+```bash
+uv run python -m rag.demo crawl books-toscrape --max-pages 300
 ```
 
 ```bash
@@ -52,9 +56,9 @@ uv run python -m rag.demo status
 uv run python -m evals.run_eval --run-id local
 ```
 
-Add `--fake-embedder` to any demo command to skip the 2.2 GB BGE-M3 download.
-The vectors are then meaningless, which is fine for watching the pipeline run
-and useless for judging retrieval quality.
+`crawl` fetches, extracts, indexes and follows links within the source's own
+domain until the page budget runs out. Adding a new domain stays a manual
+decision in `config/sources.yaml`.
 
 ## Run the services
 
@@ -104,7 +108,7 @@ curl -X POST localhost:8000/agent -H "X-API-Key: dev-key" -H "Content-Type: appl
 ```
 
 ```bash
-curl "localhost:8000/ingest/status?source_id=sec-edgar" -H "X-API-Key: dev-key"
+curl "localhost:8000/ingest/status?source_id=books-toscrape" -H "X-API-Key: dev-key"
 ```
 
 The `explain` block needs `api.explain_enabled: true` in config as well as a

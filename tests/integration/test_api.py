@@ -207,7 +207,7 @@ async def test_explain_identifies_the_prompt_by_version(
     response = await explaining_client.post(
         "/ask", json={"question": "revenue", "explain": True}, headers=HEADERS
     )
-    assert response.json()["explain"]["prompt_version"] == "rag_answer/v2"
+    assert response.json()["explain"]["prompt_version"] == "rag_answer/v3"
 
 
 async def test_two_explain_calls_return_different_nonces(

@@ -19,12 +19,12 @@ from rag.config.settings import Settings, get_settings
 from rag.db.pool import Database
 from rag.fetch.deadletter import DeadLetterStore
 from rag.fetch.registry import SourceRegistry
-from rag.index.embed import BGEM3Embedder, Embedder, FakeEmbedder
+from rag.index.embed import Embedder, build_embedder
 from rag.index.store import QdrantStore
 from rag.log import get_logger
 from rag.mcp.tools import ToolDependencies, ToolService
 from rag.prompts.registry import PromptRegistry
-from rag.retrieve.rerank import IdentityReranker, MiniLMReranker
+from rag.retrieve.rerank import MiniLMReranker
 from rag.retrieve.service import RetrieveDependencies, SearchService
 from rag.retrieve.types import Reranker
 
@@ -82,19 +82,11 @@ class AppContext:
     response_cache: TTLCache
 
 
-def build_context(
-    settings: Settings | None = None, fake_models: bool = False
-) -> AppContext:
+def build_context(settings: Settings | None = None) -> AppContext:
     resolved = settings if settings is not None else get_settings()
     db = Database(resolved.postgres)
-    embedder: Embedder = (
-        FakeEmbedder()
-        if fake_models
-        else BGEM3Embedder(resolved.index, resolved.index.embed_model)
-    )
-    reranker: Reranker = (
-        IdentityReranker() if fake_models else MiniLMReranker(resolved.retrieve)
-    )
+    embedder: Embedder = build_embedder(resolved.index)
+    reranker: Reranker = MiniLMReranker(resolved.retrieve)
     store = QdrantStore(resolved.qdrant)
     search = SearchService(
         RetrieveDependencies(

@@ -12,8 +12,8 @@ from rag.prompts.validate import fallback_answer, validate
 REGISTRY = PromptRegistry()
 
 
-def test_the_active_rag_answer_version_is_v2():
-    assert REGISTRY.active_version("rag_answer") == "v2"
+def test_the_active_rag_answer_version_is_v3():
+    assert REGISTRY.active_version("rag_answer") == "v3"
 
 
 def test_a_prompt_carries_its_content_hash():
@@ -28,7 +28,7 @@ def test_the_hash_changes_between_versions():
 
 
 def test_superseded_versions_stay_in_the_repo():
-    assert REGISTRY.versions("rag_answer") == ["v1", "v2"]
+    assert REGISTRY.versions("rag_answer") == ["v1", "v2", "v3"]
 
 
 def test_the_identifier_is_what_a_trace_step_records():

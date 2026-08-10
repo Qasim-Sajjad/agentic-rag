@@ -33,14 +33,17 @@ class WorkerDeps:
 
 
 class FetchWorker:
-    def __init__(self, deps: WorkerDeps, name: str = "worker-1") -> None:
+    def __init__(
+        self, deps: WorkerDeps, name: str = "worker-1", source_id: str | None = None
+    ) -> None:
         self._deps = deps
         self._name = name
+        self._source_id = source_id
 
     async def run_once(self, limit: int, handler: Handler | None = None) -> int:
         """Claims up to `limit` URLs and processes each. Returns how many ran."""
         claimed = await self._deps.frontier.claim(
-            self._name, limit, self._deps.settings.lease_minutes
+            self._name, limit, self._deps.settings.lease_minutes, self._source_id
         )
         for entry in claimed:
             outcome = await self._deps.service.fetch(entry.url)

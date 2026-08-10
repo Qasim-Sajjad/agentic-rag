@@ -18,6 +18,26 @@ log = get_logger(__name__)
 BGE_M3 = "BAAI/bge-m3"
 DENSE_DIMS = 1024
 
+# Exactly what BGE-M3 loads. The repo also ships onnx/model.onnx_data, a 2.2 GB
+# copy of the same weights in a format we never touch, and FlagEmbedding's
+# loader fetches the whole repo: its ignore list covers flax and TensorFlow
+# weights but not ONNX. Resolving the snapshot ourselves with this filter is
+# the difference between a 2.2 GB download and a 4.4 GB one.
+BGE_M3_FILES = (
+    "config.json",
+    "config_sentence_transformers.json",
+    "modules.json",
+    "sentence_bert_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "sentencepiece.bpe.model",
+    "pytorch_model.bin",
+    "colbert_linear.pt",
+    "sparse_linear.pt",
+    "1_Pooling/config.json",
+)
+
 
 @dataclass(frozen=True)
 class Embedding:
@@ -68,15 +88,36 @@ class BGEM3Embedder:
         if self._model is None:
             from FlagEmbedding import BGEM3FlagModel
 
-            log.info("loading embedding model", model=self.model_name)
-            self._model = BGEM3FlagModel(self.model_name, use_fp16=False)
+            path = self._resolve()
+            log.info("loading embedding model", model=self.model_name, path=path)
+            self._model = BGEM3FlagModel(path, use_fp16=False)
         return self._model
+
+    def _resolve(self) -> str:
+        """Local snapshot path for the model, downloading only what it loads.
+
+        Handing FlagEmbedding a path that exists makes it skip its own
+        whole-repo download, which is what otherwise drags in the ONNX copy.
+        """
+        from pathlib import Path
+
+        if Path(self.model_name).exists():
+            return self.model_name
+        from huggingface_hub import snapshot_download
+
+        return str(
+            snapshot_download(self.model_name, allow_patterns=list(BGE_M3_FILES))
+        )
 
     async def embed(self, texts: list[str]) -> list[Embedding]:
         model = self._load()
         output = model.encode(
             texts,
             batch_size=self._settings.embed_batch_size,
+            # BGE-M3 defaults to its full 8192 token window. Chunks target
+            # `target_tokens`, so encoding at 8192 pays for padding that is
+            # never used and costs roughly an order of magnitude on CPU.
+            max_length=self._settings.embed_max_length,
             return_dense=True,
             return_sparse=True,
             return_colbert_vecs=False,
@@ -91,6 +132,56 @@ class BGEM3Embedder:
             )
             for i in range(len(texts))
         ]
+
+
+class SentenceTransformerEmbedder:
+    """Any sentence-transformers model, dense only.
+
+    Exists only for the embedding sweep in `evals/SPEC.md`, which names
+    Qwen3-Embedding-0.6B as the model to compare against. It is never the
+    production embedder: a dense only model leaves the sparse side of hybrid
+    retrieval empty, which is exactly the cost DESIGN section 3 refuses to pay.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        dims: int,
+        query_prefix: str = "",
+        doc_prefix: str = "",
+    ) -> None:
+        self.model_name = model_name
+        self.dims = dims
+        # Qwen3 wants an instruction prefix on queries and not on documents.
+        # Getting that asymmetry wrong silently destroys recall and looks like
+        # a bad model, so it is a constructor argument rather than a guess.
+        self._query_prefix = query_prefix
+        self._doc_prefix = doc_prefix
+        self._model: Any = None
+
+    def _load(self) -> Any:
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            log.info("loading embedding model", model=self.model_name)
+            self._model = SentenceTransformer(self.model_name)
+        return self._model
+
+    async def embed(self, texts: list[str]) -> list[Embedding]:
+        prefixed = [f"{self._doc_prefix}{text}" for text in texts]
+        vectors = self._load().encode(prefixed, normalize_embeddings=True)
+        return [Embedding([float(value) for value in vector], {}) for vector in vectors]
+
+    async def embed_queries(self, texts: list[str]) -> list[Embedding]:
+        prefixed = [f"{self._query_prefix}{text}" for text in texts]
+        vectors = self._load().encode(prefixed, normalize_embeddings=True)
+        return [Embedding([float(value) for value in vector], {}) for vector in vectors]
+
+
+def build_embedder(settings: IndexSettings) -> Embedder:
+    """One place that turns config into an embedder. BGE-M3 is the only one
+    that serves production, for the reason in docs/DESIGN.md section 3."""
+    return BGEM3Embedder(settings, settings.embed_model)
 
 
 async def embed_in_batches(

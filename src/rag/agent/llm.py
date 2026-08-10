@@ -66,7 +66,6 @@ class AnthropicClient:
         response = await client.messages.create(
             model=model,
             max_tokens=self._settings.max_tokens,
-            temperature=self._settings.temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
             timeout=self._settings.timeout_seconds,

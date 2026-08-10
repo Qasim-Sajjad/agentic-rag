@@ -53,9 +53,18 @@ class Frontier:
         return digest
 
     async def claim(
-        self, worker: str, limit: int, lease_minutes: int
+        self,
+        worker: str,
+        limit: int,
+        lease_minutes: int,
+        source_id: str | None = None,
     ) -> list[FrontierEntry]:
-        """SKIP LOCKED is what makes this safe across workers without a broker."""
+        """SKIP LOCKED is what makes this safe across workers without a broker.
+
+        `source_id` scopes a worker to one source, which is what keeps a crawl
+        of one domain from picking up another domain's queue and applying the
+        wrong rate limit to it.
+        """
         rows = await self._db.fetch(
             """
             UPDATE frontier SET status = 'leased', leased_by = $1,
@@ -64,6 +73,7 @@ class Frontier:
             WHERE url_hash IN (
                 SELECT url_hash FROM frontier
                 WHERE status = 'pending' AND visible_at <= now()
+                  AND ($4::text IS NULL OR source_id = $4::text)
                 ORDER BY priority, visible_at
                 LIMIT $2 FOR UPDATE SKIP LOCKED)
             RETURNING url_hash, url, source_id, attempts, passes, priority
@@ -71,6 +81,7 @@ class Frontier:
             worker,
             limit,
             str(lease_minutes),
+            source_id,
         )
         return [_to_entry(row) for row in rows]
 

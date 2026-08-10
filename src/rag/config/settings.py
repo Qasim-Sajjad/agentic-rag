@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -109,6 +109,9 @@ class IndexSettings(_Section):
     embed_batch_size: int = 32
     embed_model: str = "BAAI/bge-m3"
     embed_dims: int = 1024
+    # BGE-M3 defaults to its full 8192 token window. Chunks target
+    # `target_tokens`, so encoding at 8192 pays for padding that is never used.
+    embed_max_length: int = 1024
     tenant_id: str = "default"
 
 
@@ -230,12 +233,19 @@ class Settings(BaseSettings):
     mcp: McpSettings = McpSettings()
     api: ApiSettings = ApiSettings()
 
+    # Declared rather than tolerated: `extra="forbid"` is what catches a typo
+    # in the YAML, so the conventional unprefixed name has to be a real field.
+    # The alias bypasses the RAG__ prefix, which is the point of using it.
+    anthropic_api_key: str = Field(
+        "", validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key")
+    )
+
     @model_validator(mode="after")
     def _api_key_from_environment(self) -> Settings:
         """`ANTHROPIC_API_KEY` is the conventional name, so honour it directly
         rather than forcing `RAG__LLM__API_KEY` on top of it."""
         if not self.llm.api_key:
-            key = os.environ.get("ANTHROPIC_API_KEY", "")
+            key = self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
             if key:
                 object.__setattr__(
                     self, "llm", self.llm.model_copy(update={"api_key": key})
