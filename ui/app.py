@@ -79,7 +79,11 @@ class Api:
     key: str
 
     def _headers(self) -> dict[str, str]:
-        return {"X-API-Key": self.key}
+        # ngrok's free tier serves an HTML browser-warning interstitial to
+        # requests it cannot identify as coming from a real browser, which
+        # would otherwise arrive here as HTML where JSON was expected. This
+        # header is ngrok specific and harmless against a direct connection.
+        return {"X-API-Key": self.key, "ngrok-skip-browser-warning": "true"}
 
     def get(self, path: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
         response = httpx.get(

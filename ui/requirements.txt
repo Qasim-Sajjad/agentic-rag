@@ -1,0 +1,7 @@
+# Streamlit Community Cloud installs from this file, not from pyproject.toml.
+# ui/app.py is a pure HTTP client to the FastAPI backend (RAG_API_BASE), so it
+# needs none of the backend's dependencies: no torch, no qdrant-client, no
+# curl_cffi. Keeping this list to exactly what app.py imports is what keeps
+# the Cloud build from trying to install the whole project.
+streamlit>=1.38
+httpx>=0.27
