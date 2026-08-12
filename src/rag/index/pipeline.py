@@ -5,6 +5,9 @@ Dedup runs at three points, each one saving the cost of the stage after it.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -22,11 +25,36 @@ log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
+class StageTiming:
+    """One measured phase. Reported because it was timed, never inferred.
+
+    Embedding and writing interleave per batch, so they are accumulated
+    separately inside the loop rather than split by guesswork afterwards.
+    """
+
+    stage: str
+    ms: int
+
+
+@contextmanager
+def _timed(into: list[StageTiming], stage: str) -> Iterator[None]:
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        into.append(StageTiming(stage, round((time.perf_counter() - start) * 1000)))
+
+
+@dataclass(frozen=True)
 class IngestResult:
     doc_id: str
     chunks_written: int
     vectors_written: int
     skipped_reason: str | None = None
+    # The chunks actually written, so a caller can show them without chunking a
+    # second time. Empty on every skip path, which is the honest answer.
+    chunks: tuple[Chunk, ...] = ()
+    stages: tuple[StageTiming, ...] = ()
 
     @property
     def skipped(self) -> bool:
@@ -51,15 +79,26 @@ class IngestPipeline:
     async def ingest(
         self, doc: CanonicalDoc, source_id: str, fetch_tier: int = 0
     ) -> IngestResult:
-        skip = await self._duplicate_reason(doc)
+        stages: list[StageTiming] = []
+        with _timed(stages, "dedup"):
+            skip = await self._duplicate_reason(doc)
         if skip is not None:
-            return IngestResult(doc.doc_id, 0, 0, skip)
+            return IngestResult(doc.doc_id, 0, 0, skip, stages=tuple(stages))
         await self._deps.documents.save(doc, source_id, fetch_tier)
-        chunks = await self._fresh_chunks(doc, source_id, fetch_tier)
+        with _timed(stages, "chunk"):
+            chunks = await self._fresh_chunks(doc, source_id, fetch_tier)
         if not chunks:
-            return IngestResult(doc.doc_id, 0, 0, "all chunks were duplicates")
-        written = await self._embed_and_write(chunks)
-        return IngestResult(doc.doc_id, len(chunks), written)
+            return IngestResult(
+                doc.doc_id, 0, 0, "all chunks were duplicates", stages=tuple(stages)
+            )
+        written = await self._embed_and_write(chunks, stages)
+        return IngestResult(
+            doc.doc_id,
+            len(chunks),
+            written,
+            chunks=tuple(chunks),
+            stages=tuple(stages),
+        )
 
     async def _duplicate_reason(self, doc: CanonicalDoc) -> str | None:
         if await self._deps.documents.exists_by_content_hash(doc.content_hash):
@@ -82,27 +121,41 @@ class IngestPipeline:
         )
         return [chunk for chunk in chunks if chunk.metadata.chunk_hash not in known]
 
-    async def _embed_and_write(self, chunks: list[Chunk]) -> int:
+    async def _embed_and_write(
+        self, chunks: list[Chunk], stages: list[StageTiming]
+    ) -> int:
         batch_size = self._deps.settings.embed_batch_size
         written = 0
+        embed_ms = 0.0
+        store_ms = 0.0
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
+            began = time.perf_counter()
             vectors = await self._deps.embedder.embed([c.embed_text for c in batch])
-            stamped = [
-                chunk.model_copy(
-                    update={
-                        "metadata": chunk.metadata.model_copy(
-                            update={
-                                "embed_model_version": self._deps.embedder.model_name
-                            }
-                        )
-                    }
-                )
-                for chunk in batch
-            ]
+            embed_ms += (time.perf_counter() - began) * 1000
+            began = time.perf_counter()
+            stamped = _stamped(batch, self._deps.embedder.model_name)
             await self._deps.chunks.save_many(stamped)
             written += await self._deps.store.upsert(stamped, vectors)
+            store_ms += (time.perf_counter() - began) * 1000
+        stages.append(StageTiming("embed", round(embed_ms)))
+        stages.append(StageTiming("store", round(store_ms)))
         return written
+
+
+def _stamped(chunks: list[Chunk], model: str) -> list[Chunk]:
+    """Stamps the model that produced the vectors. This is what lets a re-embed
+    backfill find the chunks the previous model wrote."""
+    return [
+        chunk.model_copy(
+            update={
+                "metadata": chunk.metadata.model_copy(
+                    update={"embed_model_version": model}
+                )
+            }
+        )
+        for chunk in chunks
+    ]
 
 
 def chunk_metadata(

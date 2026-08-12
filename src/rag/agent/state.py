@@ -94,3 +94,8 @@ class AgentAnswer(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     confidence: Literal["high", "low", "none"] = "none"
     trace: list[TraceStep] = Field(default_factory=list)
+    # The chunks the responder actually saw, for the same reason `/ask` returns
+    # them: an answer whose evidence cannot be inspected cannot be checked. On
+    # retry these are the replacement set, not both sets, which is what makes
+    # them the context the answer was written from.
+    chunks: list[RetrievedChunk] = Field(default_factory=list)

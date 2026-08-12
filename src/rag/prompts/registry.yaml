@@ -3,3 +3,4 @@
 router: v1
 rag_answer: v3
 fallback: v1
+ocr: v2

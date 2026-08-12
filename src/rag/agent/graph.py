@@ -75,4 +75,5 @@ class AgentRunner:
             citations=final.get("citations", []),
             confidence=final.get("confidence", "none"),
             trace=final.get("trace", []),
+            chunks=final.get("chunks", []),
         )

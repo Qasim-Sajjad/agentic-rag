@@ -182,6 +182,34 @@ place, then give up with `SERVER_ERROR`.
 `UNLOCKER` is only attempted when the source registry sets
 `allow_unlocker: true` for that domain. Default is false.
 
+### Tier 4 is different in kind
+
+Tiers 1 to 3 change how we present ourselves and let the site decide. Tier 4
+pays a third party to get through a challenge on our behalf. That is a different
+act, so it is gated twice and neither gate defaults on: a provider key must be
+configured, and the source must set `allow_unlocker`.
+
+Provider is ScrapingBee, configured under `fetch.unlocker`. The key comes from
+`SCRAPINGBEE_API_KEY` in `.env`, never from a committed file. Swapping providers
+is `unlocker.py` plus that config block; nothing above it knows which service
+answered.
+
+Two behaviours matter to the ladder:
+
+- **Provider failures are ours, not the site's.** A rejected key or an exhausted
+  balance is permanent and stops the ladder (`UnlockerNotConfiguredError`).
+  Concurrency limits and provider outages are transient and retry
+  (`FetchTransportError`). Retrying an empty balance just spends another request
+  to learn the same thing.
+- **The origin's status is reported, not the proxy's.** ScrapingBee returns its
+  own 200 wrapping whatever the site said, so the fetcher reads
+  `Spb-original-status` and reports that. Otherwise every block signature check
+  downstream sees a 200 and concludes the page was fine.
+
+Every tier 4 request is billable, so every one is logged at info with its url. A
+crawl that quietly escalated should be visible in the log rather than on an
+invoice.
+
 ## Domain policy cache
 
 Stored in `source_state`, not a separate store. Fields: `preferred_tier`,
@@ -382,7 +410,7 @@ fetch/
   deadletter.py  typed give up records
   static.py      tier 1, curl_cffi
   browser.py     tiers 2 and 3, shared browser pool
-  unlocker.py    tier 4, stub
+  unlocker.py    tier 4, ScrapingBee
   service.py     the orchestrator, written last
   worker.py      claims from the frontier, owns the give up rule
   factory.py     wiring
@@ -391,8 +419,15 @@ fetch/
 
 ## Known gaps
 
-- Tier 4 is an interface with a single stub implementation. No paid unlocker is
-  wired up. Swapping in Zyte or Bright Data is a config change plus one class.
+- Tier 4 has no spend cap. Nothing counts credits or stops after N requests, so
+  a misconfigured crawl over a large registered source could run up a bill. The
+  per source `allow_unlocker` gate and the per request log are the only controls.
+- Tier 4 is enabled on exactly one source, `file-examples-pdf`, whose host
+  challenges all three self driven tiers. It is not a general default and should
+  not become one.
+- `Spb-original-status` is read defensively, falling back to the proxy's own
+  status when absent. A provider that stops sending it would silently degrade
+  block detection rather than fail loudly.
 - Tier 1 sends the honest crawler user agent. Tiers 2 and 3 send the browser's
   own, because a browser that announces itself as a crawler is not rendering
   the page a browser would get. They carry an `X-Crawler-Contact` header

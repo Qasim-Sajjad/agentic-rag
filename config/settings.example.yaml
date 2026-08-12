@@ -45,6 +45,16 @@ fetch:
     stealth: 45.0
     unlocker: 60.0
 
+  # Tier 4. api_key comes from SCRAPINGBEE_API_KEY in .env, never from here.
+  # Unreachable unless the source also sets allow_unlocker: true, so turning
+  # this on is still a per source decision. Every call costs credits.
+  unlocker:
+    provider: scrapingbee
+    endpoint: "https://app.scrapingbee.com/api/v1/"
+    render_js: true
+    premium_proxy: true
+    country_code: ""
+
   # Body markers that mean a challenge page, not content. Extend per source.
   challenge_markers:
     - "just a moment"
@@ -58,6 +68,16 @@ extract:
   min_chars_per_page: 100
   max_garbage_ratio: 0.2
   pages_per_task: 50
+
+  # VLM OCR for page ranges with no usable text layer. Uses the Anthropic key
+  # already in .env. Set enabled: false to go back to skipping scanned ranges.
+  ocr:
+    enabled: true
+    model: claude-sonnet-5
+    max_tokens: 8192
+    timeout_seconds: 180.0
+    max_pages_per_call: 20
+    text_layer_hint_chars: 4000
 
 qdrant:
   # path runs Qdrant in process with no server and wins over url. It is the
@@ -79,13 +99,17 @@ index:
   embed_dims: 1024
   embed_max_length: 1024   # chunks target 512 tokens, so 8192 is wasted padding
   tenant_id: default
+  doc_store_path: data/docs
 
 retrieve:
   candidate_pool: 50
   rerank_pool: 25
   rrf_k: 60
-  score_floor: 0.3
-  low_floor: 0.15
+  # Compared against a 0 to 1 reranker score. See the comment in
+  # src/rag/config/settings.py: raising these returns nothing rather than
+  # returning a worse answer.
+  score_floor: 0.10
+  low_floor: 0.02
   elbow_delta: 0.15
   k_min: 3
   k_max: 15

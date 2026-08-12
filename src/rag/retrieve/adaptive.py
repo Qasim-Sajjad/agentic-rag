@@ -46,13 +46,20 @@ def confidence_for(
 
 
 def adaptive_cut(chunks: list[RetrievedChunk], settings: RetrieveSettings) -> Cut:
-    """Cut the reranked list, then assign confidence from the top score."""
+    """Cut the reranked list, then assign confidence from the top score.
+
+    `confidence == "none"` still returns the candidates it cut to, and the cut
+    lands on `k_min` because every score is under the floor. Returning an empty
+    list instead made a failed retrieval indistinguishable from a broken one:
+    nothing to inspect in `/search`, nothing in the `/ask` response, nothing in
+    the agent trace. Not generating an answer from weak chunks is the caller's
+    job, and `src/rag/api/ask.py` does it by checking `confidence`, not by
+    checking whether the list happens to be empty.
+    """
     if not chunks:
         return Cut([], "none", "no relevant documents")
     scores = [chunk.score for chunk in chunks]
     confidence, reason = confidence_for(scores[0], settings)
-    if confidence == "none":
-        return Cut([], confidence, reason)
     return Cut(chunks[: _k(scores, settings)], confidence, reason)
 
 

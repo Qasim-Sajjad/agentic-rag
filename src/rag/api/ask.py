@@ -76,7 +76,11 @@ async def _generate(
     result: SearchResult,
 ) -> ValidationOutcome:
     """One repair carrying the specific error, then a deterministic fallback."""
-    if not result.chunks:
+    # Gated on confidence rather than on an empty list. Retrieval now returns
+    # the candidates it rejected so they can be inspected, so emptiness no
+    # longer means "nothing relevant" and using it as the gate would send weak
+    # chunks to the model and get back the guess this branch exists to prevent.
+    if result.confidence == "none":
         return ValidationOutcome(None, "no relevant documents", ValidationReport())
     retrieved = {chunk.chunk_id for chunk in result.chunks}
     user = assemble(system, rendered, request.question)

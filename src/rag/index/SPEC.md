@@ -179,6 +179,22 @@ no chunker logic in the path.
 and it makes "find everything not yet embedded" a fast lookup at 500K rows
 instead of a sequential scan.
 
+## What the pipeline reports back
+
+`IngestPipeline.ingest` returns an `IngestResult`. Beyond the counts it carries
+two things a caller cannot reconstruct without doing the work twice:
+
+- `chunks`, the chunks actually written. Empty on every skip path, which is the
+  honest answer. A caller that wants to display them must not re-run the chunker
+  to get them: re-chunking can show chunks that were never stored
+- `stages`, a `StageTiming` per measured phase: `dedup`, `chunk`, `embed`,
+  `store`. Timed where the work happens, not inferred afterwards. Embedding and
+  storing interleave per batch, so each is accumulated separately inside the
+  loop. A skip path returns only the stages that ran
+
+This exists so `POST /ingest/url` can report the pipeline honestly, see
+`src/rag/api/SPEC.md`. The pipeline itself neither knows nor cares who reads it.
+
 ## Demo entry point
 
 Exists for live demonstration and manual verification. Two subcommands, both

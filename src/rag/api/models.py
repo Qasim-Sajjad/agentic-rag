@@ -72,6 +72,74 @@ class AgentResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     confidence: Literal["high", "low", "none"]
     trace: list[TraceStep] = Field(default_factory=list)
+    # The context the responder saw. Same shape and same reason as on `/ask`.
+    chunks: list[RetrievedChunk] = Field(default_factory=list)
+
+
+class IngestUrlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    # Omitted means "resolve the domain in the registry". Passing it explicitly
+    # attributes the document to a source that already exists.
+    source_id: str | None = None
+    # Seeding a domain is a legal decision, see src/rag/fetch/SPEC.md, so an
+    # unregistered domain fails by default and this flag is the deliberate act.
+    # It registers a source. It does not relax robots, rate limits or the
+    # unlocker ban, none of which this flag can reach.
+    register_domain: bool = False
+
+
+class PipelineStage(BaseModel):
+    """One observed step. `latency_ms` is present only where it was measured."""
+
+    name: str
+    status: Literal["ok", "skipped", "failed"]
+    latency_ms: int | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+    note: str = ""
+
+
+class ChunkPreview(BaseModel):
+    """What the chunker produced, as returned by the pipeline rather than
+    recomputed. Recomputing risks showing chunks that were never written."""
+
+    chunk_id: str
+    chunk_index: int
+    section_path: list[str] = Field(default_factory=list)
+    token_count: int
+    is_table: bool = False
+    page_no: int | None = None
+    text: str
+    truncated: bool = False
+
+
+class IngestFailure(BaseModel):
+    """Typed reason code and the stage that produced it, never a stack trace."""
+
+    stage: str
+    reason: str
+    detail: str
+
+
+class IngestTraceResponse(BaseModel):
+    """The whole pipeline as a list of stages, which is the part a reviewer
+    wants to see. Returns 200 on a fetch that was blocked: the request
+    succeeded, the site refused, and the trace says so."""
+
+    ok: bool
+    source_id: str = ""
+    source_url: str = ""
+    doc_id: str | None = None
+    doc_type: str | None = None
+    title: str | None = None
+    stages: list[PipelineStage] = Field(default_factory=list)
+    chunks_written: int = 0
+    vectors_written: int = 0
+    skipped_reason: str | None = None
+    chunk_preview: list[ChunkPreview] = Field(default_factory=list)
+    failure: IngestFailure | None = None
+    latency_ms: int = 0
 
 
 class SourceStatusRow(BaseModel):

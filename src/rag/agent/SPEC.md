@@ -31,8 +31,14 @@ class AgentState(TypedDict):
     error: str | None
     answer: str | None
     citations: list[Citation]
+```
 
+`AgentAnswer` is what leaves the graph: `answer`, `citations`, `confidence`,
+`trace` and `chunks`. `chunks` is the state's chunk list, returned rather than
+dropped, so the caller can check the answer against the context it was written
+from. Everything else in the state stays internal.
 
+```python
 class TraceStep(BaseModel):
     node: str
     tool: str | None

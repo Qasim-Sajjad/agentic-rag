@@ -136,6 +136,96 @@ is a coroutine function and a lambda returning a coroutine fails that check.
 Verified: ruff clean, mypy clean on 71 files, injection suite green, all four
 endpoints tested against the ASGI app with a scripted model.
 
+### 2026-08-11, session 6, streamlit front end plus the ingest endpoints
+Tool: Claude Code (Opus 5)
+Asked for: A simple Streamlit front end where a URL or an uploaded PDF or DOCX
+runs through the pipeline with every step visible, plus ask and agent against
+the same corpus. Stated belief in the prompt: the endpoints and backend already
+exist, this is only a wrapper.
+Kept: Nothing about the framing survived first contact, and that turned out to
+be the useful part. The endpoints did not already exist. `/search`, `/ask`,
+`/agent` and `/ingest/status` are all read only, and ingestion lived in the
+`rag.demo` CLI. So a front end that ran the pipeline itself would have had to
+open the Qdrant collection, which `qdrant.path` runs in process and single
+writer, meaning it cannot be held by two processes. The wrapper was not possible
+as described. What went in unchanged was the decision that follows from that:
+put the write path behind `POST /ingest/url` and `POST /ingest/file` so the one
+process that already holds the collection is the one that writes, and keep
+`ui/app.py` a pure HTTP client that imports nothing from `rag`.
+Corrected: Three things I got wrong on the way. First, I designed the stage
+trace with six evenly timed stages before checking that `IngestPipeline.ingest`
+returns only counts. It cannot report per stage timings it never measured, so
+rather than invent them in the API layer I added `StageTiming` to the pipeline
+and timed `dedup`, `chunk`, `embed` and `store` where the work happens. Embed
+and store interleave per batch, so each accumulates inside the loop. A test now
+feeds a fake pipeline fixed numbers and asserts they appear verbatim, which is
+what stops a future version from filling gaps with plausible values. Second, I
+was about to display chunks by re-running the chunker on the returned document,
+copying what `rag.demo` does. That can show chunks that were never stored, so
+`IngestResult` now carries the chunks it actually wrote. Third, `latency_ms` on
+the upload stage started as `0`. Zero is a measurement and nothing was measured,
+so it is `null`.
+Rewrote: The domain policy path, twice. My first version let any URL through by
+attributing it to a default source, which quietly routed around the rule that
+seeding a domain is a legal decision. It now refuses an unregistered domain
+before any request is made, and `register_domain: true` is the caller taking
+that decision explicitly. Tested that the flag registers a source which still
+cannot use the unlocker tier, because the interesting failure is a permission
+flag that grants more than its name.
+Verified: ruff and mypy clean, 20 new unit tests plus the existing suite, and
+the whole thing driven live: an unregistered domain refused in 1 ms, a real
+quotes.toscrape.com page fetched at tier 2 and indexed in 83 seconds, the same
+URL again stopping at dedup in 972 ms with three stages instead of six, a PDF
+upload stopping at dedup, and `/ask` returning three citations with none
+rejected. Also caught in passing that the fetch tier is learned per source
+rather than per URL, since a static quotes page started at tier 2 because `/js`
+had taught the source to. Recorded in the design doc, not fixed.
+Not verified: the explain checkbox in the UI. Streamlit's custom checkbox did
+not respond to automated clicks, so the block was confirmed over HTTP instead
+and its rendering path was never exercised in a browser.
+
+### 2026-08-12, session 7, paid unlocker and VLM OCR
+Tool: Claude Code (Opus 5)
+Asked for: Wire ScrapingBee as tier 4 with a supplied key, and implement the VLM
+OCR stub using Claude Sonnet 5.
+Kept: Both interfaces were already the right shape, which is the payoff from
+stubbing them rather than omitting them. `UnlockerFetcher` needed a `fetch` body
+and a config block, nothing above it changed. OCR needed one real decision that
+went the way the earlier design note predicted: send the page range to the API as
+a `document` block rather than rasterizing to images here, so there is no image
+pipeline and no resolution constant to get wrong, and turn on citations because
+the page numbers they return are the only thing that can fill
+`Provenance.page`.
+Corrected: Four things. The OCR call has to be async and `PdfRouter._parse_range`
+was sync, so the router's per range loop became `await`ed. The OCR prompt could
+not be an inline string, so it went into the registry as a versioned role like
+every other prompt. `extract` must not import from `agent`, so the vision client
+is its own protocol in `extract/vision.py` rather than an extension of the
+agent's LLM client. And the provider's HTTP status is not the origin's: a
+ScrapingBee 200 can wrap a site's 403, so the fetcher reads `Spb-original-status`
+and reports that, otherwise every block signature check downstream sees 200 and
+concludes the page was fine.
+Rewrote: The OCR prompt, after running it. v1 answered a page that was a
+photograph with `[Image: a laptop keyboard resting on a marble surface]`, a
+model authored sentence entering the corpus as document content and citable as
+if the document had said it. v2 forbids describing a page with no text and the
+rule is pinned by a test, so the diff between v1 and v2 is the evidence. Also
+rewrote the design doc's claim that tier 4 was stubbed, which this session made
+false.
+Verified: ruff and mypy clean, 410 tests, and both paths against the real
+services. Tier 1 on file-examples.com returns 403 with `cf-mitigated: challenge`
+and a "just a moment" body; tier 4 returns 200 and the real page. OCR on the
+scanned page range of a sample PDF returns no blocks under v2 for the photograph
+page, and a forced text page transcribes to six blocks including a structurally
+intact Markdown table, all at confidence 0.7.
+Found in passing: the `file-examples-pdf` seed URL was returning 404. It had been
+recorded as blocked, because a challenge is all the self driven tiers could see.
+The paid tier's first useful result was correcting that belief rather than
+fetching the file.
+Not done: no spend cap on either metered path. Both are billed per call, both are
+recorded as gaps rather than guarded, and a per source budget with a hard stop is
+the missing control.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

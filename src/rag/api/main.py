@@ -1,7 +1,13 @@
-"""FastAPI surface. Four endpoints, separated by responsibility.
+"""FastAPI surface. Separated by responsibility, not merged for convenience.
 
-Collapsing them would hide which layer failed and make it impossible to
+Four read endpoints: `/search` is retrieval with no LLM, `/ask` is single shot
+RAG, `/agent` routes through LangGraph and MCP, `/ingest/status` reports scrape
+state. Collapsing them would hide which layer failed and make it impossible to
 benchmark retrieval independently of generation.
+
+Two write endpoints, `/ingest/url` and `/ingest/file`, exist because Qdrant runs
+in process and is single writer: the collection belongs to whichever process
+opened it, so an ingest has to run here while the API is up.
 
     uvicorn rag.api.main:app --port 8000
 """
@@ -13,7 +19,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from rag.api.ask import AskDependencies, ask
@@ -24,6 +30,7 @@ from rag.api.deps import (
     context_of,
     tenant_from_key,
 )
+from rag.api.ingest import UploadedFile, ingest_upload, ingest_url
 from rag.api.models import (
     AgentRequest,
     AgentResponse,
@@ -33,11 +40,14 @@ from rag.api.models import (
     ErrorResponse,
     IngestStatusResponse,
     IngestSummary,
+    IngestTraceResponse,
+    IngestUrlRequest,
     SearchRequest,
     SearchResponse,
     SourceStatusRow,
 )
 from rag.db.pool import Database
+from rag.fetch.factory import close_fetchers
 from rag.log import configure_logging, get_logger
 from rag.mcp.schemas import IngestStatusInput
 from rag.retrieve.types import SearchFilters
@@ -45,6 +55,9 @@ from rag.retrieve.types import SearchFilters
 log = get_logger(__name__)
 
 Tenant = Annotated[str, Depends(tenant_from_key)]
+# Annotated rather than a `File(...)` default, which would be a function call in
+# a default argument.
+Upload = Annotated[UploadFile, File()]
 
 
 @asynccontextmanager
@@ -55,6 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await context.db.connect()
     await context.store.bootstrap(context.embedder.dims)
     yield
+    await close_fetchers(context.fetchers)
     await context.store.close()
     await context.db.close()
 
@@ -63,12 +77,15 @@ def create_app(context: AppContext | None = None) -> FastAPI:
     app = FastAPI(title="agentic-rag", lifespan=lifespan)
     if context is not None:
         app.state.context = context
-    _register(app)
+    _register_query(app)
+    _register_ingest(app)
     _register_errors(app)
     return app
 
 
-def _register(app: FastAPI) -> None:
+def _register_query(app: FastAPI) -> None:
+    """The read path. No endpoint here writes to the corpus."""
+
     @app.post("/search", response_model=SearchResponse)
     async def search(
         request: SearchRequest, http: Request, tenant: Tenant
@@ -117,7 +134,35 @@ def _register(app: FastAPI) -> None:
             citations=result.citations,
             confidence=result.confidence,
             trace=result.trace,
+            chunks=result.chunks,
         )
+
+
+def _register_ingest(app: FastAPI) -> None:
+    """The write path plus the status read, which reports on it."""
+
+    @app.post("/ingest/url", response_model=IngestTraceResponse)
+    async def ingest_from_url(
+        request: IngestUrlRequest, http: Request, tenant: Tenant
+    ) -> IngestTraceResponse:
+        """Fetch, extract, chunk, embed and store one URL, reporting each stage.
+
+        Lives here rather than in a separate process because Qdrant in process
+        is single writer: the collection is held by whoever opened it.
+        """
+        return await ingest_url(request, context_of(http).ingest)
+
+    @app.post("/ingest/file", response_model=IngestTraceResponse)
+    async def ingest_from_file(
+        http: Request, tenant: Tenant, file: Upload
+    ) -> IngestTraceResponse:
+        """The same path minus the fetch. A PDF, DOCX, XLSX, CSV or text file."""
+        upload = UploadedFile(
+            filename=file.filename or "upload",
+            content=await file.read(),
+            content_type=file.content_type or "",
+        )
+        return await ingest_upload(upload, context_of(http).ingest)
 
     @app.get("/ingest/status", response_model=IngestStatusResponse)
     async def ingest_status(

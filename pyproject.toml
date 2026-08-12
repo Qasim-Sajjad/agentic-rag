@@ -12,6 +12,8 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "asyncpg>=0.29",
+    # Required by POST /ingest/file. FastAPI parses multipart through it.
+    "python-multipart>=0.0.9",
 ]
 
 # Per phase. Installed when that phase starts, not before, so a phase 0
@@ -22,6 +24,9 @@ extract = ["trafilatura>=1.12", "pymupdf4llm>=0.0.17", "docling>=2.0"]
 index = ["qdrant-client>=1.11", "FlagEmbedding>=1.3"]
 retrieve = ["sentence-transformers>=3.1"]
 agent = ["langgraph>=0.2", "mcp>=1.0", "anthropic>=0.34"]
+# The Streamlit demo front end in ui/. An HTTP client only: it imports nothing
+# from rag, so it cannot open the Qdrant collection the API is holding.
+ui = ["streamlit>=1.38"]
 
 # Testing and development dependencies. These are not installed in production.
 [dependency-groups]
@@ -88,6 +93,8 @@ max-returns = 4
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "PLR2004", "PLR0915", "PLC0415"]
 "notebooks/*" = ["T20", "ANN", "E402"]
+# Layout code: pixel widths and column ratios are magic values by nature.
+"ui/*" = ["PLR2004"]
 # Playwright and Camoufox ship no type information, and importing either at
 # module scope costs hundreds of milliseconds in processes that never render.
 "src/rag/fetch/browser.py" = ["ANN401", "PLC0415"]
@@ -101,6 +108,10 @@ max-returns = 4
 "src/rag/extract/office.py" = ["PLC0415"]
 "src/rag/extract/service.py" = ["PLC0415"]
 "src/rag/extract/pdf.py" = ["ANN401", "PLC0415"]
+# PyMuPDF is imported lazily so a process that never sees a scanned page never
+# loads it, and the Anthropic response objects are dynamically typed.
+"src/rag/extract/ocr.py" = ["PLC0415"]
+"src/rag/extract/vision.py" = ["ANN401", "PLC0415"]
 "src/rag/index/embed.py" = ["ANN401", "PLC0415"]
 "src/rag/index/store.py" = ["ANN401", "PLC0415"]
 "src/rag/retrieve/service.py" = ["ANN401", "PLC0415"]
@@ -141,7 +152,7 @@ module = ["pymupdf4llm.*", "FlagEmbedding.*", "camoufox.*", "trafilatura.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["rag.extract.pdf", "rag.index.embed"]
+module = ["rag.extract.pdf", "rag.extract.ocr", "rag.index.embed"]
 disallow_untyped_calls = false
 
 [tool.pytest.ini_options]

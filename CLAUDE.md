@@ -102,7 +102,12 @@ evals/         gold set, eval harness, results
 tests/         unit, integration, fixtures
 notebooks/     benchmark notebooks, no logic
 docs/          design doc, architecture, AI usage log
+ui/            Streamlit demo front end, HTTP client only
 ```
+
+`ui/` imports nothing from `rag` and never will. Qdrant runs in process and is
+single writer, so the API server is the only process that may hold the
+collection. A front end with pipeline code in it could not run alongside it.
 
 Each `src/rag/*/SPEC.md` defines that module's contract. Read the SPEC before
 implementing or changing a module. If the code needs to diverge from the SPEC,

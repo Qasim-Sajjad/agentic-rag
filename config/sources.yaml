@@ -51,3 +51,24 @@
   requests_per_second: 0.5
   priority: 1
   tos_note: "Open access papers. arXiv asks bulk users to use its S3 access, so this stays a handful of seeds at a low rate rather than a crawl."
+
+# The only source with tier 4 enabled. Cloudflare refused all three self driven
+# tiers here, 403 with cf-mitigated: challenge, which is what makes it the one
+# useful demonstration of the paid tier. Enabling it is a deliberate decision
+# per source, not a global default: see the legal boundaries section of
+# src/rag/fetch/SPEC.md. Every tier 4 request is billable and logged.
+- source_id: file-examples-pdf
+  domain: file-examples.com
+  seed_urls:
+    # The old seed under /storage/ returns 404. Tier 4 is what revealed that:
+    # the 403 the self driven tiers saw was the challenge, not the real answer.
+    - "https://file-examples.com/wp-content/storage/2017/10/file-sample_150kB.pdf"
+    - "https://file-examples.com/wp-content/storage/2017/10/file-example_PDF_500_kB.pdf"
+  max_tier: 4
+  allow_unlocker: true
+  requests_per_second: 0.5
+  priority: 1
+  tos_note: "Sample file host, no terms forbidding automated access. Tier 4 enabled deliberately to exercise the unlocker path."
+
+
+

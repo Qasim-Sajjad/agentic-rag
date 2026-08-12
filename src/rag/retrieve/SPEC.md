@@ -71,7 +71,7 @@ the 2023 and 2024 risk disclosures". Let the retrieval signal decide.
 
 After reranking, cut at whichever comes first:
 
-- Absolute floor: score below `score_floor` (default 0.3)
+- Absolute floor: score below `score_floor` (default 0.10)
 - Elbow: gap between consecutive scores exceeds `elbow_delta` (default 0.15)
 
 Clamp to `[k_min, k_max]` (defaults 3 and 15).
@@ -88,7 +88,27 @@ is the low confidence branch rather than a silent bad answer.
 | Top score in `[low_floor, score_floor)` | `low` | "weak match" |
 | Top score < `low_floor`, or zero results | `none` | "no relevant documents" |
 
-The caller decides what to do. This module does not generate a fallback answer.
+Scores are compared in the same units the reranker emits, which is 0 to 1. The
+cross encoder produces an unbounded logit, so `MiniLMReranker` squashes it
+through a logistic first. Skipping that step made the floors meaningless: they
+read as probabilities and were compared against logits from roughly -11 to 11,
+so `score_floor: 0.3` silently demanded a logit above 0.3 and the same question
+phrased as a sentence rather than a keyword returned nothing.
+
+The floors are low because `ms-marco-MiniLM-L-6-v2` was trained on short web
+queries. A conversational question scored against table heavy text lands far
+below what the model's ranking quality suggests, and the floors have to reflect
+the model in use rather than a round number.
+
+`none` returns the candidates it cut to, bounded at `k_min`, not an empty list.
+Only zero results is empty. Discarding what was scored made a failed lookup
+indistinguishable from a broken one: nothing to inspect in `/search`, nothing in
+the `/ask` response, nothing in the agent trace.
+
+The caller decides what to do. This module does not generate a fallback answer,
+and it does not decide whether an answer may be generated. `src/rag/api/ask.py`
+refuses to generate when confidence is `none`, keyed on the confidence value
+rather than on whether the chunk list happens to be empty.
 
 ## Caching
 
@@ -103,7 +123,10 @@ with an interface that allows Redis later.
 - RRF ordering matches a hand computed expected order on a fixed fixture
 - Reranking changes order versus fusion alone on a known case
 - Adaptive k returns fewer chunks for a narrow query than a broad one
-- Unanswerable query returns `confidence == "none"` and an empty chunk list
+- Unanswerable query returns `confidence == "none"` with the candidates it
+  rejected, bounded at `k_min`. Zero results returns an empty list
+- The reranker squashes its logits into 0 to 1, monotonically, so the order is
+  unchanged and an extreme logit saturates instead of raising
 - Filters are applied, verified by a query that must exclude a known chunk
 
 Retrieval quality is measured in `evals/`, not here. These are correctness

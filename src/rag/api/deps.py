@@ -7,6 +7,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from fastapi import Header, HTTPException, Request
@@ -14,12 +15,19 @@ from fastapi import Header, HTTPException, Request
 from rag.agent.graph import AgentRunner
 from rag.agent.llm import LLMClient, build_client
 from rag.agent.nodes import NodeDependencies
+from rag.api.ingest import IngestDependencies
 from rag.clock import SystemClock
 from rag.config.settings import Settings, get_settings
 from rag.db.pool import Database
+from rag.extract.service import ExtractService
 from rag.fetch.deadletter import DeadLetterStore
+from rag.fetch.factory import build_fetchers, build_service
+from rag.fetch.protocols import Fetcher
 from rag.fetch.registry import SourceRegistry
+from rag.fetch.types import FetchTier
 from rag.index.embed import Embedder, build_embedder
+from rag.index.pipeline import IndexDependencies, IngestPipeline
+from rag.index.repository import ChunkRepository, DocumentRepository
 from rag.index.store import QdrantStore
 from rag.log import get_logger
 from rag.mcp.tools import ToolDependencies, ToolService
@@ -80,6 +88,10 @@ class AppContext:
     store: QdrantStore
     embedder: Embedder
     response_cache: TTLCache
+    ingest: IngestDependencies
+    # Held so the lifespan can close them. Browsers launch lazily, so an API
+    # process that only answers questions never starts one.
+    fetchers: dict[FetchTier, Fetcher]
 
 
 def build_context(settings: Settings | None = None) -> AppContext:
@@ -117,6 +129,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
             agent_settings=resolved.agent,
         )
     )
+    fetchers = build_fetchers(resolved.fetch)
     return AppContext(
         settings=resolved,
         db=db,
@@ -130,6 +143,40 @@ def build_context(settings: Settings | None = None) -> AppContext:
         store=store,
         embedder=embedder,
         response_cache=TTLCache(resolved.api.cache_ttl_seconds),
+        ingest=build_ingest(db, store, embedder, fetchers, resolved),
+        fetchers=fetchers,
+    )
+
+
+def build_ingest(
+    db: Database,
+    store: QdrantStore,
+    embedder: Embedder,
+    fetchers: dict[FetchTier, Fetcher],
+    resolved: Settings,
+) -> IngestDependencies:
+    """The write path. Shares the embedder and the store with retrieval on
+    purpose: Qdrant in process is single writer, so a second client here would
+    be a second process trying to hold the same collection.
+
+    Public because the API tests build their own context and need the same
+    wiring rather than a second, drifting copy of it.
+    """
+    pipeline = IngestPipeline(
+        IndexDependencies(
+            documents=DocumentRepository(db, Path(resolved.index.doc_store_path)),
+            chunks=ChunkRepository(db),
+            store=store,
+            embedder=embedder,
+            settings=resolved.index,
+        )
+    )
+    return IngestDependencies(
+        fetch=build_service(db, SystemClock(), resolved.fetch, fetchers),
+        extract=ExtractService(resolved.extract),
+        pipeline=pipeline,
+        registry=SourceRegistry(db),
+        settings=resolved,
     )
 
 

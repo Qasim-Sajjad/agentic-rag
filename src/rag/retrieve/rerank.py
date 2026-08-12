@@ -8,6 +8,7 @@ change, which is the reason this is a protocol and not a function.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from rag.config.settings import RetrieveSettings
@@ -63,8 +64,25 @@ class MiniLMReranker:
         return sorted(scored, key=lambda chunk: -chunk.score)
 
     def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        """All candidates in one forward pass, roughly 150ms at pool 25."""
-        return [float(score) for score in self._load().predict(pairs)]
+        """All candidates in one forward pass, roughly 150ms at pool 25.
+
+        Squashed through a logistic, because the model emits an unbounded
+        logit, roughly -11 to 11, and `score_floor` is a 0 to 1 threshold.
+        Comparing the two made the cut turn on how a question was phrased
+        rather than on what matched it: one query scored 0.675 and the same
+        question written as a sentence scored under the 0.3 floor, which
+        returned nothing at all.
+        """
+        return [_sigmoid(float(score)) for score in self._load().predict(pairs)]
+
+
+def _sigmoid(score: float) -> float:
+    """Both branches are the same function. Split so neither one calls `exp` on
+    a large positive number, which raises rather than saturating."""
+    if score < 0:
+        weight = math.exp(score)
+        return weight / (1.0 + weight)
+    return 1.0 / (1.0 + math.exp(-score))
 
 
 def _passage(chunk: RetrievedChunk) -> str:

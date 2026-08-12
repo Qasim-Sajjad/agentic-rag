@@ -56,6 +56,24 @@ class TierTimeouts(_Section):
     unlocker: float = 60.0
 
 
+class UnlockerSettings(_Section):
+    """Tier 4, a managed unlocker. Off unless a key is present AND the source
+    sets `allow_unlocker`, so enabling it stays a per source decision.
+
+    `api_key` comes from SCRAPINGBEE_API_KEY in .env, never from a committed
+    file. Every call costs credits, which is why the fetcher logs each one.
+    """
+
+    provider: Literal["scrapingbee"] = "scrapingbee"
+    endpoint: str = "https://app.scrapingbee.com/api/v1/"
+    api_key: str = ""
+    # The provider renders and solves on its side. That is the whole product,
+    # and it is why this tier is opt in per source rather than a global default.
+    render_js: bool = True
+    premium_proxy: bool = True
+    country_code: str = ""
+
+
 class FetchSettings(_Section):
     min_text_chars: int = 200
     max_attempts_per_tier: int = 3
@@ -84,12 +102,34 @@ class FetchSettings(_Section):
         "datadome",
         "_abck",
     )
+    unlocker: UnlockerSettings = UnlockerSettings()
+
+
+class OcrSettings(_Section):
+    """VLM OCR for page ranges with no usable text layer.
+
+    A vision model, not a classic OCR engine, because the scanned pages that
+    reach this gate are the ones with tables and multi column layout, which is
+    exactly where character level OCR loses the structure that chunking needs.
+    """
+
+    enabled: bool = True
+    model: str = "claude-sonnet-5"
+    max_tokens: int = 8192
+    timeout_seconds: float = 180.0
+    # One request per range, so a range wider than this is split. Guards both
+    # the model's output budget and the blast radius of a failed call.
+    max_pages_per_call: int = 20
+    # Characters of the existing, poor text layer passed alongside the image.
+    # See rule 1 in src/rag/extract/ocr.py: the model aligns to it.
+    text_layer_hint_chars: int = 4000
 
 
 class ExtractSettings(_Section):
     min_chars_per_page: int = 100
     max_garbage_ratio: float = 0.2
     pages_per_task: int = 50
+    ocr: OcrSettings = OcrSettings()
 
 
 class QdrantSettings(_Section):
@@ -113,14 +153,22 @@ class IndexSettings(_Section):
     # `target_tokens`, so encoding at 8192 pays for padding that is never used.
     embed_max_length: int = 1024
     tenant_id: str = "default"
+    # Object storage stand in. `CanonicalDoc` is written here as one immutable
+    # JSON blob per document, which is what makes a re-embed a backfill rather
+    # than a re-scrape.
+    doc_store_path: str = "data/docs"
 
 
 class RetrieveSettings(_Section):
     candidate_pool: int = 50
     rerank_pool: int = 25
     rrf_k: int = 60
-    score_floor: float = 0.3
-    low_floor: float = 0.15
+    # Compared against a reranker score in 0 to 1, see src/rag/retrieve/rerank.py.
+    # Low because ms-marco-MiniLM was trained on short web queries and scores a
+    # conversational question against table heavy text far below what its
+    # ranking quality suggests. Raising these silently returns nothing.
+    score_floor: float = 0.10
+    low_floor: float = 0.02
     elbow_delta: float = 0.15
     k_min: int = 3
     k_max: int = 15
@@ -239,18 +287,38 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(
         "", validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key")
     )
+    scrapingbee_api_key: str = Field(
+        "", validation_alias=AliasChoices("SCRAPINGBEE_API_KEY", "scrapingbee_api_key")
+    )
 
     @model_validator(mode="after")
     def _api_key_from_environment(self) -> Settings:
-        """`ANTHROPIC_API_KEY` is the conventional name, so honour it directly
-        rather than forcing `RAG__LLM__API_KEY` on top of it."""
-        if not self.llm.api_key:
-            key = self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-            if key:
-                object.__setattr__(
-                    self, "llm", self.llm.model_copy(update={"api_key": key})
-                )
+        """Provider names are the conventional ones, so honour them directly
+        rather than forcing `RAG__LLM__API_KEY` on top of them. A key never
+        appears in a committed file, only in .env or the environment."""
+        self._inject_llm_key()
+        self._inject_unlocker_key()
         return self
+
+    def _inject_llm_key(self) -> None:
+        if self.llm.api_key:
+            return
+        key = self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        if key:
+            object.__setattr__(
+                self, "llm", self.llm.model_copy(update={"api_key": key})
+            )
+
+    def _inject_unlocker_key(self) -> None:
+        if self.fetch.unlocker.api_key:
+            return
+        key = self.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY", "")
+        if not key:
+            return
+        unlocker = self.fetch.unlocker.model_copy(update={"api_key": key})
+        object.__setattr__(
+            self, "fetch", self.fetch.model_copy(update={"unlocker": unlocker})
+        )
 
     @classmethod
     def settings_customise_sources(

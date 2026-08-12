@@ -15,10 +15,26 @@ rather than once per URL. That cache is the difference between six hours and six
 days of ingestion.
 
 **Where the line is.** Rendering a page the way a browser would is engineering.
-Defeating a specific vendor's protection is not. We do not solve CAPTCHAs. Tier
-4 is an interface for a paid unlocker, stubbed here. In production, buying Zyte
-or Bright Data for the hostile few percent is cheaper than maintaining evasion
-code, and it moves the ToS risk to a vendor whose business is that risk.
+Defeating a specific vendor's protection is not. We write no evasion code and
+solve no CAPTCHAs.
+
+Tier 4 draws that line by outsourcing rather than crossing it: a managed
+unlocker, ScrapingBee here, does the challenge solving as its business, which
+moves the ToS risk to a vendor whose business is that risk and keeps this
+codebase free of evasion logic. It is gated twice, and neither gate defaults on:
+a provider key must be configured, and the source must set `allow_unlocker`.
+Exactly one source has it enabled.
+
+That gating is the point, not a formality. Tiers 1 to 3 change how we present
+ourselves and let the site decide. Tier 4 pays someone to decide for us, so it is
+opt in per domain and only for domains whose terms permit automated access. It is
+not pointed at anything that forbids them.
+
+**What tier 4 actually bought.** On `file-examples.com`, tier 1 returns 403 with
+`cf-mitigated: challenge` and a "just a moment" body; tier 4 returns 200 and the
+real page. It also corrected a wrong belief: the seed URL that had been recorded
+as blocked was returning 404 behind the challenge. The self driven tiers could
+only see the challenge, so "blocked" was hiding "this file does not exist".
 
 **Rate limited vs unreachable.** These are never collapsed. A 429 requeues with
 a delay and honours Retry-After. Persistent blocking at the highest allowed tier,
@@ -131,11 +147,16 @@ page PDF is 20 independent tasks, model gating so TableFormer does not run on
 prose, async with a global semaphore plus per domain token buckets, and a shared
 browser pool rather than a browser per URL.
 
-**What breaks first at 1M documents.** Not Qdrant. The browser pool and the OCR
-GPU queue. Tier 2 and 3 fetches at 2 to 10 seconds each do not scale linearly on
-one machine, and the fix is horizontal workers with a shared queue and a shared
-policy cache, not a bigger box. Second is the SimHash banded index, which needs
-to move out of memory.
+**What breaks first at 1M documents.** Not Qdrant. The browser pool, then cost.
+Tier 2 and 3 fetches at 2 to 10 seconds each do not scale linearly on one
+machine, and the fix is horizontal workers with a shared queue and a shared
+policy cache, not a bigger box.
+
+The two metered paths are next, and they fail on budget rather than throughput:
+OCR is billed per page and tier 4 per request, neither has a spend cap, and at a
+million documents a scanned minority is the largest line item in the system. A
+per source budget with a hard stop is the missing control. Third is the SimHash
+banded index, which needs to move out of memory.
 
 **50 clients.** One collection per client is the wrong default. Single
 collection, `tenant_id` as a Qdrant tenant key, which co-locates each tenant's
@@ -279,9 +300,15 @@ See `docs/AI_USAGE.md` for the per session log.
 
 Every shortcut, stated plainly.
 
-- Tier 4 unlocker is an interface with a stub. No paid service wired up.
-- VLM OCR is an interface with a stub. The routing gate is implemented and
-  tested. No GPU inference stood up.
+- Tier 4 has no spend cap. ScrapingBee is wired and billable per request; the
+  per source `allow_unlocker` gate and a log line per call are the only
+  controls. It is enabled on one source, `file-examples-pdf`.
+- OCR output is unevaluated. Claude Sonnet 5 reads scanned page ranges and the
+  routing gate selects it, but there is no gold transcription set, so accuracy
+  on tables and multi column layout is unmeasured. `Block.confidence` is a
+  constant 0.7: a VLM returns no calibrated score, and a self reported one would
+  be worse than an honest constant.
+- OCR is billed per page with no spend cap, the same gap as tier 4.
 - Div based HTML table layouts are not reconstructed.
 - Contextual retrieval not implemented. Known recall gain, 500K LLM calls.
 - No RAGAS answer quality set. Needs reference answers, unstable at this sample
@@ -300,13 +327,38 @@ Every shortcut, stated plainly.
 - Tiers 2 and 3 send the browser's own user agent rather than the honest
   crawler one, since announcing a crawler defeats the point of rendering like a
   browser. They send `X-Crawler-Contact` instead.
-- No link discovery or sitemap parsing. The frontier is seeded from
-  `config/sources.yaml` only.
+- Link discovery is same domain only, from anchors in extracted HTML. No sitemap
+  parsing, so a page reachable only from a sitemap is never queued.
+- The preferred fetch tier is learned per source, not per URL pattern. One
+  JavaScript rendered page raises the starting tier for the whole domain, so
+  static pages on that domain then pay for a browser until the policy TTL
+  expires. Observed on `quotes-toscrape`, where `/js` taught the source tier 2
+  and an ordinary page afterwards started there.
 - Postgres is the only storage adapter. There is no in-memory implementation,
   so every fetch test needs a running database.
 - Qdrant runs in process by default, which is single process: the API and an
   ingest run cannot hold it at once. `docker compose up -d qdrant` plus
-  `path: null` switches to the server.
+  `path: null` switches to the server. This constraint is why the write path is
+  an API endpoint rather than a separate service: see the next four entries.
+- Ingestion through `POST /ingest/url` is synchronous. A long PDF holds the
+  request open for the whole embed, and the stage trace arrives all at once when
+  the call returns rather than streaming as each stage completes. The fix is a
+  job id plus a poll, or SSE, neither of which is built.
+- The ingest endpoints write chunks under `index.tenant_id` from config, not
+  under the tenant the API key maps to. One key and one tenant makes those the
+  same value today, so nothing is currently wrong, but a second tenant could
+  write documents into the first tenant's namespace. The read path already
+  injects the tenant correctly. The write path does not.
+- Any valid API key can write to the corpus. There is no separate ingest scope
+  or role.
+- There is no delete path anywhere, so Qdrant only grows. Deleting a `document`
+  row cascades to its chunks in Postgres and leaves those vectors orphaned in
+  the collection. Re-ingesting the same document overwrites its points, because
+  chunk ids are deterministic, so search results never duplicate, but genuinely
+  removing a document is not supported.
+- `ui/` is a demo surface, not a product. No streaming, no auth beyond the key
+  in the sidebar, and one shared Streamlit session state, so two people opening
+  it at once share nothing but also confuse each other's reruns.
 - Docling is wired for office formats but the PDF complex range falls back to
   PyMuPDF4LLM. The gate that would select Docling is implemented and tested.
 - The gold set is 51 items, not the 115 the eval SPEC targets, and it has not
@@ -314,6 +366,25 @@ Every shortcut, stated plainly.
 - `recall@10` in `results.jsonl` is bounded by adaptive k, which cuts to 3, so
   it equals `recall@3`. See section 7. The column is honest about what ran and
   dishonest about what it is named.
+- The reranker is a poor relevance signal on table heavy documents queried
+  conversationally, and the confidence floors cannot fix it. Measured against an
+  ingested clinical PDF whose chunks are pipe delimited lab metadata:
+  `pap test cytology report` scores 0.682 and `FEDERSPIEL` scores 0.663, both
+  correctly `high`, while `what is the patient diagnosis` scores 0.007 and
+  `tell me about the user FEDERSPIEL and its clinical information` scores 0.004,
+  both wrongly `none`. Two of three deliberately irrelevant queries score 0.0,
+  so the floors do separate obvious junk, but a relevant conversational question
+  is indistinguishable from an irrelevant one. `ms-marco-MiniLM-L-6-v2` was
+  trained on short web queries and this content has almost no prose for it to
+  match. The real fix is a better reranker, `bge-reranker-v2-m3` on a GPU, which
+  is the config swap the protocol in `src/rag/retrieve/rerank.py` exists to
+  allow, or deriving confidence from the dense score rather than the rerank
+  score. Lowering the floors further is not a fix: it would admit the junk too.
+  `/agent` is unaffected in practice because it rewrites the question into a
+  keyword query and retries, which is exactly the case adaptive retry was for.
+- Every number in `evals/results.jsonl` predates the reranker squash and the
+  floor change, so `k_used`, the confidence labels and the `unanswerable 5/5`
+  result are all stale. The eval has not been re-run.
 - `evals/compare_embeddings.py` has not been run. Re-embedding the corpus twice
   on CPU is about 25 minutes.
 - The corpus is roughly 1000 chunks from three sources. Retrieval behaves

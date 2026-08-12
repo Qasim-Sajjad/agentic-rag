@@ -115,7 +115,22 @@ previous range, and no header row, is merged into it.
 
 ## OCR
 
-`VLMOCRParser` renders pages to images and batches them to a VLM endpoint.
+`VLMOCRParser` sends the page range to Claude as a `document` block and takes
+back Markdown. The API renders the pages itself, so there is no image pipeline
+here and no resolution constant to get wrong. Model and budgets come from
+`extract.ocr`; the key is the one already in `.env` for the agent.
+
+Citations are enabled on the document block because the per page numbers they
+return are what fills `Provenance.page`. Without them one blob of transcribed
+Markdown has no page attribution at all. A block whose text carries no citation
+keeps the range's first page rather than inheriting a neighbour's, because a
+wrong page number is worse than a coarse one.
+
+Transcription is routed through the same Markdown block parser the text layer
+path uses, so an OCR'd table is the same `Block` shape as a parsed one and
+nothing downstream can tell which produced it. `confidence` is the one field
+that can.
+
 Two rules:
 
 - Pass any extracted text layer alongside the image, even a poor one. The model
@@ -126,6 +141,18 @@ Two rules:
 VLM output is not a normal OCR error mode. Errors are fluent and pass spell
 checks, so they reach the index looking correct. Confidence propagation is the
 mitigation, not accuracy alone.
+
+A third rule emerged from running it. **A page with no text produces no blocks.**
+Prompt v1 answered a page that was a photograph with `[Image: a laptop keyboard
+resting on a marble surface]`, which is a model authored sentence entering the
+corpus as document content and citable as if the document had said it.
+Describing a picture is not transcription. v2 forbids it, and the rule is pinned
+by a test rather than left to the prompt.
+
+A range that cannot be read is skipped, not fatal, which is the same rule the
+rest of the ladder follows: OCR disabled, no API key, or a safety refusal all
+return no blocks. A scanned appendix must not cost a document its readable
+pages.
 
 ## Tests
 
@@ -153,7 +180,12 @@ dropped tables, merged columns, lost headings.
 
 ## Known gaps
 
-- `VLMOCRParser` is an interface with a stub. The routing gate is implemented
-  and tested. No GPU inference is stood up.
+- `Block.confidence` is a constant 0.7 on OCR output, not a calibrated score. A
+  VLM does not return one, and a self reported number would be worse than an
+  honest constant. It marks provenance, not reliability.
+- OCR is billed per page and has no spend cap. A large scanned corpus would be
+  expensive, and nothing here stops it.
+- OCR output is not evaluated. There is no gold transcription set, so accuracy
+  on tables and multi column layout is unmeasured.
 - Div based HTML table layouts are not reconstructed.
 - Images and figures are captured as captions only. No image embedding.

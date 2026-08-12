@@ -11,12 +11,18 @@ import pytest
 from rag.agent.graph import AgentRunner
 from rag.agent.llm import ScriptedClient
 from rag.agent.nodes import NodeDependencies
-from rag.api.deps import AppContext, TTLCache
+from rag.api.deps import AppContext, TTLCache, build_ingest
 from rag.api.main import create_app
 from rag.clock import SystemClock
-from rag.config.settings import ApiSettings, QdrantSettings, Settings
+from rag.config.settings import (
+    ApiSettings,
+    IndexSettings,
+    QdrantSettings,
+    Settings,
+)
 from rag.db.pool import Database
 from rag.fetch.deadletter import DeadLetterStore
+from rag.fetch.factory import build_fetchers
 from rag.fetch.registry import SourceRegistry
 from rag.fetch.types import Source
 from rag.index.embed import FakeEmbedder
@@ -42,6 +48,8 @@ async def build_context(db: Database, tmp_path: Path, explain: bool) -> AppConte
     settings = Settings(
         qdrant=qdrant,
         api=ApiSettings(api_keys={KEY: "default"}, explain_enabled=explain),
+        # Under tmp_path so a test never writes a document blob into data/docs.
+        index=IndexSettings(doc_store_path=str(tmp_path / "docs")),
     )
     store = QdrantStore(qdrant)
     embedder = FakeEmbedder()
@@ -74,6 +82,7 @@ async def build_context(db: Database, tmp_path: Path, explain: bool) -> AppConte
             agent_settings=settings.agent,
         )
     )
+    fetchers = build_fetchers(settings.fetch)
     return AppContext(
         settings=settings,
         db=db,
@@ -87,6 +96,10 @@ async def build_context(db: Database, tmp_path: Path, explain: bool) -> AppConte
         store=store,
         embedder=embedder,
         response_cache=TTLCache(settings.api.cache_ttl_seconds),
+        # Real wiring rather than a second copy that drifts. Browsers launch
+        # lazily, so building all four tiers costs nothing here.
+        ingest=build_ingest(db, store, embedder, fetchers, settings),
+        fetchers=fetchers,
     )
 
 
@@ -130,6 +143,29 @@ async def test_a_wrong_api_key_is_rejected(client: httpx.AsyncClient):
         "/search", json={"query": "revenue"}, headers={"X-API-Key": "nope"}
     )
     assert response.status_code == 401
+
+
+async def test_the_ingest_endpoints_are_behind_the_same_key(client: httpx.AsyncClient):
+    """A write endpoint that forgot the dependency would be an open door."""
+    url = await client.post("/ingest/url", json={"url": "https://example.test/a"})
+    assert url.status_code == 401
+    upload = await client.post("/ingest/file", files={"file": ("a.txt", b"hello")})
+    assert upload.status_code == 401
+
+
+async def test_ingest_url_refuses_an_unregistered_domain_with_200(
+    client: httpx.AsyncClient,
+):
+    """The request succeeded and the answer was no. Those are different, so this
+    is a 200 carrying a typed reason rather than a 4xx."""
+    response = await client.post(
+        "/ingest/url", json={"url": "https://nowhere.test/a"}, headers=HEADERS
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["failure"]["reason"] == "unknown_source"
+    assert body["stages"] == []
 
 
 async def test_search_returns_its_documented_shape(client: httpx.AsyncClient):
@@ -229,6 +265,30 @@ async def test_the_agent_trace_names_every_node_that_ran(client: httpx.AsyncClie
     response = await client.post("/agent", json={"question": "hello"}, headers=HEADERS)
     nodes = [step["node"] for step in response.json()["trace"]]
     assert "responder" in nodes
+
+
+async def test_the_agent_returns_the_context_it_answered_from(
+    client: httpx.AsyncClient,
+):
+    """Same reason `/ask` returns chunks: an answer whose evidence cannot be
+    inspected cannot be checked. The agent used to drop them at the boundary."""
+    response = await client.post(
+        "/agent", json={"question": "revenue"}, headers=HEADERS
+    )
+    body = response.json()
+    assert "chunks" in body
+    assert isinstance(body["chunks"], list)
+
+
+async def test_the_agent_response_shape_is_documented(client: httpx.AsyncClient):
+    response = await client.post("/agent", json={"question": "hello"}, headers=HEADERS)
+    assert set(response.json()) == {
+        "answer",
+        "citations",
+        "confidence",
+        "trace",
+        "chunks",
+    }
 
 
 async def test_ingest_status_summarises_the_corpus(client: httpx.AsyncClient):
