@@ -127,7 +127,7 @@ llm:
   router_model: claude-haiku-4-5-20251001
   responder_model: claude-sonnet-5
   judge_model: claude-sonnet-5 # For Now because of Costing
-  max_tokens: 2048
+  max_tokens: 8192
   temperature: 0.0
   timeout_seconds: 60.0
 

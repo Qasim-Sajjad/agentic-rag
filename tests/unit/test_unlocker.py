@@ -44,9 +44,7 @@ def capturing_fetcher(response: httpx.Response) -> tuple[UnlockerFetcher, list]:
         return response
 
     fetcher = UnlockerFetcher(settings())
-    fetcher._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler)
-    )
+    fetcher._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return fetcher, seen
 
 
@@ -55,9 +53,7 @@ def raising_fetcher(error: Exception) -> UnlockerFetcher:
         raise error
 
     fetcher = UnlockerFetcher(settings())
-    fetcher._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler)
-    )
+    fetcher._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return fetcher
 
 
@@ -185,4 +181,42 @@ async def test_a_transport_failure_is_reported_as_a_transport_error():
     fetcher = raising_fetcher(httpx.ConnectError("no route"))
     with pytest.raises(FetchTransportError, match="tier 4 transport error"):
         await fetcher.fetch("https://blocked.test/a", 10.0)
+    await fetcher.close()
+
+
+async def test_the_result_never_carries_the_provider_url_or_the_key():
+    """Regression. `final_url` was `response.url`, which is the provider endpoint
+    with `api_key` in the query string. It became `CanonicalDoc.source_url` and
+    wrote the credential into Postgres, Qdrant, every citation, and the model's
+    context."""
+    fetcher = fetcher_returning(httpx.Response(200, content=b"the page"))
+    result = await fetcher.fetch("https://blocked.test/a", 10.0)
+    assert result.final_url == "https://blocked.test/a"
+    for field in (result.url, result.final_url):
+        assert KEY not in field
+        assert "scrapingbee" not in field
+    await fetcher.close()
+
+
+async def test_the_resolved_origin_url_is_used_when_the_provider_reports_it():
+    """Redirects still resolve, they just resolve to the origin rather than to
+    the proxy."""
+    fetcher = fetcher_returning(
+        httpx.Response(
+            200,
+            content=b"the page",
+            headers={"spb-resolved-url": "https://blocked.test/final"},
+        )
+    )
+    result = await fetcher.fetch("https://blocked.test/a", 10.0)
+    assert result.final_url == "https://blocked.test/final"
+    await fetcher.close()
+
+
+async def test_a_blank_resolved_url_falls_back_to_the_requested_url():
+    fetcher = fetcher_returning(
+        httpx.Response(200, content=b"ok", headers={"spb-resolved-url": "   "})
+    )
+    result = await fetcher.fetch("https://blocked.test/a", 10.0)
+    assert result.final_url == "https://blocked.test/a"
     await fetcher.close()

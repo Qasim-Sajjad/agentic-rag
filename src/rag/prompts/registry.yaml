@@ -1,6 +1,6 @@
 # Role to active version. Superseded versions stay in the repo, because the
 # diff between rag_answer v1, v2 and v3 is the evidence of iteration.
-router: v1
+router: v2
 rag_answer: v3
 fallback: v1
 ocr: v2

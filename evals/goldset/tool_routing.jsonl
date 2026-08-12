@@ -11,11 +11,15 @@
 {"expected_tools": ["search_corpus"], "qid": "r010", "question": "Summarise what we have on Adult Fiction."}
 {"expected_tools": ["search_corpus"], "qid": "r011", "question": "Find passages about All products."}
 {"expected_tools": ["search_corpus"], "qid": "r012", "question": "What does the corpus say about Autobiography?"}
-{"expected_tools": ["get_ingest_status"], "qid": "r100", "question": "Is the arxiv-pdf source up to date?"}
-{"expected_tools": ["get_ingest_status"], "qid": "r101", "question": "Has the books-toscrape crawl been failing recently?"}
-{"expected_tools": ["get_ingest_status"], "qid": "r102", "question": "How many documents have we indexed from quotes-toscrape?"}
-{"expected_tools": ["get_ingest_status"], "qid": "r103", "question": "Is arxiv-pdf currently reachable?"}
-{"expected_tools": ["get_ingest_status"], "qid": "r104", "question": "When did we last successfully fetch anything from books-toscrape?"}
+{"expected_tools": ["search_corpus"], "qid": "r400", "question": "Do you know about \"1,000 Places to See Before You Die\"?"}
+{"expected_tools": ["search_corpus"], "qid": "r401", "question": "Have you seen anything mentioning A Flight of Arrows (The Pathfinders #2)?"}
+{"expected_tools": ["search_corpus"], "qid": "r402", "question": "Are you familiar with A Light in the Attic?"}
+{"expected_tools": ["search_corpus"], "qid": "r403", "question": "Do you have any information on A Murder in Time?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r100", "question": "Is the adhoc-samplepdf.org source up to date?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r101", "question": "Has the adhoc-www.upwork.com crawl been failing recently?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r102", "question": "How many documents have we indexed from arxiv-pdf?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r103", "question": "Is books-toscrape currently reachable?"}
+{"expected_tools": ["get_ingest_status"], "qid": "r104", "question": "When did we last successfully fetch anything from demo?"}
 {"expected_tools": ["get_ingest_status"], "qid": "r105", "question": "Are any of our sources blocked right now?"}
 {"expected_tools": ["get_ingest_status"], "qid": "r106", "question": "How many documents failed to ingest?"}
 {"expected_tools": ["get_ingest_status"], "qid": "r107", "question": "Which sources are unreachable?"}

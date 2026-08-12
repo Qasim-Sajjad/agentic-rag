@@ -32,7 +32,7 @@ DEFAULT_KEY = "dev-key"
 INGEST_TIMEOUT = 900.0
 QUERY_TIMEOUT = 300.0
 
-UPLOAD_TYPES = ["pdf", "docx", "xlsx", "csv", "txt", "md", "html", "htm"]
+UPLOAD_TYPES = ["pdf", "docx", "txt", "md", "html", "htm"]
 DOC_TYPES = ["", "html", "pdf", "office", "text"]
 
 STATUS_MARK = {"ok": "🟢", "skipped": "🟡", "failed": "🔴"}
@@ -152,21 +152,9 @@ def _run(call: Callable[[], dict[str, Any]], message: str) -> dict[str, Any] | N
 
 
 def sidebar() -> Api:
-    st.sidebar.title("agentic-rag")
-    base = st.sidebar.text_input(
-        "API base url", value=os.environ.get("RAG_API_BASE", DEFAULT_BASE)
-    )
-    key = st.sidebar.text_input(
-        "X-API-Key",
-        value=os.environ.get("RAG_API_KEY", DEFAULT_KEY),
-        type="password",
-    )
-    st.sidebar.caption("Sent as X-API-Key. The key maps to a tenant server side.")
+    base = os.environ.get("RAG_API_BASE", DEFAULT_BASE)
+    key = os.environ.get("RAG_API_KEY", DEFAULT_KEY)
     api = Api(base.rstrip("/"), key)
-    if st.sidebar.button("Check connection"):
-        _check(api)
-    st.sidebar.divider()
-    st.sidebar.caption(SINGLE_WRITER_NOTE)
     return api
 
 
@@ -198,7 +186,7 @@ def _ingest_url_panel(api: Api) -> None:
         url = st.text_input("URL", placeholder="https://quotes.toscrape.com/page/3/")
         cols = st.columns(2)
         source_id = cols[0].text_input("source_id, optional")
-        register = cols[1].checkbox("register this domain if it is unknown")
+        register = cols[1].checkbox("register this domain if it is unknown", value=True)
         submitted = st.form_submit_button("Run the pipeline")
     st.caption(
         "An unregistered domain is refused by default, because seeding a domain "
@@ -219,7 +207,7 @@ def _ingest_url_panel(api: Api) -> None:
 
 
 def _ingest_file_panel(api: Api) -> None:
-    chosen = st.file_uploader("PDF, DOCX, XLSX, CSV, text or HTML", type=UPLOAD_TYPES)
+    chosen = st.file_uploader("PDF, DOCX, text or HTML", type=UPLOAD_TYPES)
     st.caption(
         "No fetch runs. Extraction takes bytes and a url, so an uploaded file "
         "and a scraped page are indistinguishable to everything downstream. The "

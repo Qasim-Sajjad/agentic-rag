@@ -43,6 +43,9 @@ _ACCOUNT_ERRORS = {
 #: it is read defensively and the proxy's own status is the fallback.
 _ORIGIN_STATUS_HEADER = "spb-original-status"
 
+#: Where the provider says it actually landed, after redirects.
+_RESOLVED_URL_HEADER = "spb-resolved-url"
+
 
 class UnlockerFetcher:
     tier = FetchTier.UNLOCKER
@@ -129,7 +132,7 @@ def _to_result(url: str, response: httpx.Response, tier: FetchTier) -> FetchResu
     headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
     return FetchResult(
         url=url,
-        final_url=str(response.url),
+        final_url=_origin_url(headers, url),
         status=_origin_status(headers, response.status_code),
         content=bytes(response.content),
         content_type=headers.get("content-type", DEFAULT_CONTENT_TYPE),
@@ -138,6 +141,20 @@ def _to_result(url: str, response: httpx.Response, tier: FetchTier) -> FetchResu
         fetched_at=datetime.now(UTC),
         headers=headers,
     )
+
+
+def _origin_url(headers: dict[str, str], requested: str) -> str:
+    """Never `response.url`.
+
+    On every other tier the response url is the origin after redirects, which is
+    exactly what `final_url` means. Here it is the provider's endpoint, and that
+    endpoint carries `api_key` as a query parameter. `final_url` becomes
+    `CanonicalDoc.source_url`, so returning it would write the credential into
+    Postgres, into the Qdrant payload, into every citation, and into the context
+    sent to the model. It did, once. This function is why it cannot again.
+    """
+    resolved = headers.get(_RESOLVED_URL_HEADER, "").strip()
+    return resolved or requested
 
 
 def _origin_status(headers: dict[str, str], fallback: int) -> int:

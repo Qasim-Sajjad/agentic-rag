@@ -3,9 +3,13 @@
     python -m evals.routing build
     python -m evals.routing score
 
-30 questions labelled with the expected first tool. Ambiguous cases carry a set
+34 questions labelled with the expected first tool. Ambiguous cases carry a set
 of acceptable answers rather than one, because forcing a single label on a
 genuinely ambiguous question measures the labeller, not the router.
+
+One group exists because of a real failure. `router/v1` sent "Do you know about
+X" to `answer_directly`, so the agent reported no documents on content that
+`/search` scored at 0.998. Measured on this set, v1 is 31/34 and v2 is 33/34.
 
 The router sees the question only, so this measures exactly what it decides on.
 """
@@ -60,6 +64,16 @@ SEARCH_TEMPLATES = (
     "Find passages about {title}.",
 )
 
+# Content lookups phrased as questions about the assistant's own knowledge. This
+# shape broke router/v1: the framing reads as a capability question while the
+# subject matter is a corpus lookup, and v1 routed on the framing.
+KNOWLEDGE_TEMPLATES = (
+    'Do you know about "{title}"?',
+    "Have you seen anything mentioning {title}?",
+    "Are you familiar with {title}?",
+    "Do you have any information on {title}?",
+)
+
 # Genuinely ambiguous: could be answered from content or from crawler state.
 AMBIGUOUS = (
     (
@@ -107,7 +121,13 @@ async def build(args: argparse.Namespace) -> int:
     finally:
         await db.close()
     names = [str(row["source_id"]) for row in sources] or ["books-toscrape"]
-    items = _search_items(found) + _status_items(names) + _direct_items() + _ambiguous()
+    items = (
+        _search_items(found)
+        + _knowledge_items(found)
+        + _status_items(names)
+        + _direct_items()
+        + _ambiguous()
+    )
     _write(items, Path(args.out))
     log.info("routing set written", path=args.out, questions=len(items))
     return len(items)
@@ -123,6 +143,19 @@ def _search_items(found: list[str]) -> list[RoutingItem]:
             )
         )
     return items
+
+
+def _knowledge_items(found: list[str]) -> list[RoutingItem]:
+    """Same expected tool as a plain content question. The point of the group is
+    that the phrasing invites `answer_directly` and must not get it."""
+    return [
+        RoutingItem(
+            f"r4{index:02d}",
+            KNOWLEDGE_TEMPLATES[index % len(KNOWLEDGE_TEMPLATES)].format(title=title),
+            ["search_corpus"],
+        )
+        for index, title in enumerate(found[:4])
+    ]
 
 
 def _status_items(names: list[str]) -> list[RoutingItem]:

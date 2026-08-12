@@ -182,7 +182,12 @@ class LLMSettings(_Section):
     router_model: str = "claude-haiku-4-5-20251001"
     responder_model: str = "claude-sonnet-5"
     judge_model: str = "claude-opus-5"
-    max_tokens: int = 2048
+    # The responder must echo a chunk id per claim inside JSON, so its output
+    # scales with the number of retrieved chunks, not with answer length. At
+    # 2048 a 15 chunk context truncated mid JSON: schema validation failed, the
+    # repair failed identically, and every answer fell back. Measured: 4798
+    # output tokens on that context.
+    max_tokens: int = 8192
     temperature: float = 0.0
     timeout_seconds: float = 60.0
 

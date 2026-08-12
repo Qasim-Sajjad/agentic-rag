@@ -32,7 +32,11 @@ def test_superseded_versions_stay_in_the_repo():
 
 
 def test_the_identifier_is_what_a_trace_step_records():
-    assert REGISTRY.get("router").identifier == "router/v1"
+    """Asserts the shape against the active version rather than a literal, so
+    activating a new prompt is not a test failure. Which version is live is the
+    registry's job to state, not this test's."""
+    active = REGISTRY.active_version("router")
+    assert REGISTRY.get("router").identifier == f"router/{active}"
 
 
 def test_a_missing_role_is_an_explicit_error():
@@ -91,3 +95,23 @@ def test_a_valid_payload_round_trips():
     )
     outcome = validate(raw, {"c_1"})
     assert outcome.payload is not None and outcome.payload.confidence == "high"
+
+
+def test_the_active_router_decides_on_subject_matter_not_phrasing():
+    """router/v1 sent "Do you know about X" to `answer_directly`, so the agent
+    reported no documents on content /search scored at 0.998. Measured on the
+    routing set, v1 is 31/34 and v2 is 33/34."""
+    text = " ".join(REGISTRY.get("router").text.split())
+    assert "Decide on subject matter, not on phrasing" in text
+    assert "do you know about" in text.lower()
+
+
+def test_the_active_router_prefers_searching_when_unsure():
+    """The two mistakes are not symmetric: an unnecessary search costs latency,
+    a skipped one produces a false absence the user cannot detect."""
+    text = " ".join(REGISTRY.get("router").text.split())
+    assert "When you are unsure, search" in text
+
+
+def test_the_superseded_router_prompt_is_kept():
+    assert REGISTRY.versions("router") == ["v1", "v2"]
