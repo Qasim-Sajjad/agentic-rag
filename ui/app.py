@@ -188,18 +188,29 @@ def ingest_tab(api: Api) -> None:
 def _ingest_url_panel(api: Api) -> None:
     with st.form("ingest-url"):
         url = st.text_input("URL", placeholder="https://quotes.toscrape.com/page/3/")
-        cols = st.columns(2)
+        cols = st.columns(3)
         source_id = cols[0].text_input("source_id, optional")
         register = cols[1].checkbox("register this domain if it is unknown", value=True)
+        unlocker = cols[2].checkbox("also allow the paid unlocker tier for this domain")
         submitted = st.form_submit_button("Run the pipeline")
     st.caption(
         "An unregistered domain is refused by default, because seeding a domain "
-        "is a legal decision. Registering it does not relax robots.txt, the rate "
-        "limiter, or the ban on the unlocker tier."
+        "is a legal decision. Registering it does not relax robots.txt or the "
+        "rate limiter, and it does not turn on the unlocker tier by itself."
     )
+    if unlocker:
+        st.warning(
+            "Tier 4 sends this domain's pages through a paid unlocking service, "
+            "which is billable per request and only appropriate for a domain "
+            "whose terms permit automated access. Check that before enabling it."
+        )
     if not submitted or not url.strip():
         return
-    payload: dict[str, Any] = {"url": url.strip(), "register_domain": register}
+    payload: dict[str, Any] = {
+        "url": url.strip(),
+        "register_domain": register,
+        "allow_unlocker": unlocker,
+    }
     if source_id.strip():
         payload["source_id"] = source_id.strip()
     trace = _run(

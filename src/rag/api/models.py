@@ -88,6 +88,13 @@ class IngestUrlRequest(BaseModel):
     # It registers a source. It does not relax robots, rate limits or the
     # unlocker ban, none of which this flag can reach.
     register_domain: bool = False
+    # A second, separate decision from `register_domain`. Tier 4 is a paid
+    # service that solves a challenge on the caller's behalf, so it costs money
+    # and is only appropriate for a domain whose terms permit automated access.
+    # Bare registration must never imply it: this flag exists so a reviewer of
+    # the request can see the unlocker was chosen deliberately, not inherited
+    # from clicking "register" on an unfamiliar URL.
+    allow_unlocker: bool = False
 
 
 class PipelineStage(BaseModel):

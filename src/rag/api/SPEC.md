@@ -147,7 +147,7 @@ Runs one URL through fetch, extract, dedup, chunk, embed and store, and reports
 each stage.
 
 ```
-Request:  {url, source_id?, register_domain?}
+Request:  {url, source_id?, register_domain?, allow_unlocker?}
 Response: {ok, source_id, source_url, doc_id, doc_type, title,
            stages: [{name, status, latency_ms, detail, note}],
            chunks_written, vectors_written, skipped_reason,
@@ -178,6 +178,14 @@ Domain policy is unchanged and is not negotiable from here:
   registers a source with `allow_unlocker: false` and `max_tier: STEALTH`. It
   does not relax robots.txt, the rate limiter or the circuit breaker, none of
   which this flag can reach
+- `allow_unlocker: true` is a second, separate decision. Tier 4 is a paid
+  service that solves a challenge on the caller's behalf, so it is opt in per
+  domain rather than implied by registration. Setting it on a request that also
+  registers the domain enables both at once; setting it on a request against a
+  domain already registered upgrades that source in place, so the same domain
+  never needs deleting and recreating to change its mind. Leaving it unset never
+  disables the unlocker on a source that already has it, since that would be a
+  request silently downgrading a decision an earlier one made deliberately
 - A blocked fetch returns HTTP 200 with `ok: false` and the reason in the trace.
   The request succeeded, the site refused, and those are different facts
 
@@ -284,6 +292,11 @@ Consistent shape, typed reason codes, never a stack trace.
 - Missing API key returns 401
 - `/ingest/url` on an unregistered domain refuses before any request is made
 - `register_domain: true` registers a source that still cannot use the unlocker
+- `allow_unlocker: true` on the same request enables tier 4 on the newly
+  registered source
+- `allow_unlocker: true` against an already registered source upgrades it in
+  place rather than requiring re-registration
+- Omitting `allow_unlocker` never disables it on a source that already has it
 - A blocked fetch is a `failed` stage in a 200 response, not a 5xx
 - An unsupported type stops at `extract` with the earlier stages still `ok`
 - A duplicate reports `dedup` as `skipped` and emits no later stages

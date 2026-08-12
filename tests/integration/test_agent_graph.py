@@ -125,10 +125,14 @@ async def test_the_trace_records_the_tool_that_ran(build):
 
 
 async def test_the_trace_records_the_prompt_version(build):
+    """Checked against the active version rather than a literal, so activating
+    a new router prompt is not a test failure. Which version is live is the
+    registry's job to state, not this test's."""
     make, _ = build
     runner = make([plan_json("answer_directly"), answer_json("Hello.")])
     result = await runner.run("hello")
-    assert result.trace[0].prompt_version == "router/v1"
+    active = PromptRegistry().active_version("router")
+    assert result.trace[0].prompt_version == f"router/{active}"
 
 
 async def test_low_confidence_triggers_exactly_one_retry(build):

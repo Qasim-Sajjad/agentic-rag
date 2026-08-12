@@ -212,6 +212,53 @@ async def test_registering_a_domain_does_not_enable_the_unlocker_tier():
     assert registered.domain == "quotes.test"
 
 
+async def test_registering_a_domain_with_the_unlocker_flag_enables_tier_four():
+    """A second, separate decision from `register_domain`. Setting it on the
+    same request is what makes the choice visible in the request itself,
+    rather than inherited from bare registration."""
+    registry = FakeRegistry()
+    deps = build_deps(registry=registry)
+    request = IngestUrlRequest(
+        url="https://quotes.test/1", register_domain=True, allow_unlocker=True
+    )
+    response = await ingest_url(request, deps)
+    assert response.ok is True
+    registered = registry.upserted[0]
+    assert registered.allow_unlocker is True
+    assert registered.max_tier is FetchTier.UNLOCKER
+
+
+async def test_the_unlocker_flag_upgrades_an_already_registered_source():
+    """The same domain can be ingested again later with the flag set, and the
+    source that already exists should not need deleting and recreating."""
+    registry = FakeRegistry({"quotes": QUOTES})
+    deps = build_deps(registry=registry)
+    request = IngestUrlRequest(url="https://quotes.test/1", allow_unlocker=True)
+    response = await ingest_url(request, deps)
+    assert response.ok is True
+    upgraded = registry.upserted[0]
+    assert upgraded.source_id == "quotes"
+    assert upgraded.allow_unlocker is True
+    assert upgraded.max_tier is FetchTier.UNLOCKER
+
+
+async def test_omitting_the_unlocker_flag_never_turns_it_back_off():
+    """One directional. A source that already earned tier 4 must not lose it
+    because a later request forgot to ask again."""
+    registry = FakeRegistry(
+        {
+            "quotes": QUOTES.model_copy(
+                update={"allow_unlocker": True, "max_tier": FetchTier.UNLOCKER}
+            )
+        }
+    )
+    deps = build_deps(registry=registry)
+    request = IngestUrlRequest(url="https://quotes.test/1")
+    response = await ingest_url(request, deps)
+    assert response.ok is True
+    assert registry.upserted == []
+
+
 async def test_a_blocked_fetch_is_a_failed_stage_and_not_an_exception():
     """The request succeeded. The site refused. Those are different things."""
     failure = FetchFailure(

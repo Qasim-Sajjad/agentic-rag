@@ -206,7 +206,7 @@ async def _source_for_url(
     domain = domain_of(request.url)
     existing = await deps.registry.by_domain(domain)
     if existing is not None:
-        return existing
+        return await _reconcile_unlocker(existing, request.allow_unlocker, deps)
     if not request.register_domain:
         raise _StageStoppedError(
             "fetch",
@@ -214,27 +214,54 @@ async def _source_for_url(
             f"{domain} is not in the source registry. Seeding a domain is a "
             "deliberate decision, see config/sources.yaml",
         )
-    return await _register(domain, deps)
+    return await _register(domain, request.allow_unlocker, deps)
 
 
-async def _register(domain: str, deps: IngestDependencies) -> Source:
+async def _register(
+    domain: str, allow_unlocker: bool, deps: IngestDependencies
+) -> Source:
     """Registering is the deliberate act the caller opted into.
 
-    It does not relax anything else: robots.txt, the rate limiter and the
-    unlocker ban are enforced by the fetch service and are not reachable here.
+    It does not relax anything else on its own: robots.txt and the rate limiter
+    are enforced by the fetch service and are not reachable here. The unlocker
+    ban is the one thing this endpoint can lift, and only when `allow_unlocker`
+    was set on this same request, never as a side effect of registration alone.
     """
     source = Source(
         source_id=f"adhoc-{domain}",
         domain=domain,
         seed_urls=[],
         status=SourceStatus.ACTIVE,
-        max_tier=FetchTier.STEALTH,
-        allow_unlocker=False,
+        max_tier=FetchTier.UNLOCKER if allow_unlocker else FetchTier.STEALTH,
+        allow_unlocker=allow_unlocker,
         tos_note="registered at request time via POST /ingest/url",
     )
     await deps.registry.upsert(source)
-    log.info("source registered on request", source_id=source.source_id, domain=domain)
+    log.info(
+        "source registered on request",
+        source_id=source.source_id,
+        domain=domain,
+        allow_unlocker=allow_unlocker,
+    )
     return source
+
+
+async def _reconcile_unlocker(
+    source: Source, allow_unlocker: bool, deps: IngestDependencies
+) -> Source:
+    """A caller can ask for the unlocker on a domain that is already registered
+    without it. Upgrading is one directional and per request: asking for it
+    turns it on, leaving the flag unset never turns it off, since a source that
+    already earned tier 4 on a previous request should not silently lose it
+    because a later request forgot to ask again."""
+    if not allow_unlocker or source.allow_unlocker:
+        return source
+    upgraded = source.model_copy(
+        update={"allow_unlocker": True, "max_tier": FetchTier.UNLOCKER}
+    )
+    await deps.registry.upsert(upgraded)
+    log.info("unlocker enabled on request", source_id=source.source_id)
+    return upgraded
 
 
 async def _fetch(url: str, deps: IngestDependencies, trace: _Trace) -> FetchResult:
