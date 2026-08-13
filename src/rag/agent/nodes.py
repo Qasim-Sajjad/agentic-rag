@@ -131,6 +131,16 @@ async def tool_executor(state: AgentState, deps: NodeDependencies) -> AgentState
 async def _run_tool(
     state: AgentState, deps: NodeDependencies, plan: Plan, started: float
 ) -> AgentState:
+    # The router's decision, not the retrieval call it may lead to: this is
+    # what the question was rewritten into and which tool it went to, visible
+    # in the server log rather than only in the trace of one API response.
+    log.info(
+        "agent tool call",
+        tool=plan.tool,
+        query=plan.query,
+        source_id=plan.source_id,
+        reason=plan.reason,
+    )
     try:
         note = await _dispatch(state, deps, plan)
     except Exception as exc:  # noqa: BLE001 a tool failure is data, not a crash

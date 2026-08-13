@@ -49,7 +49,7 @@ class SearchService:
         reranked = await self._deps.reranker.rerank(
             query, fused[: self._settings.rerank_pool]
         )
-        return self._finish(reranked, top_k, started)
+        return self._finish(query, reranked, top_k, started)
 
     async def _embed_query(self, query: str) -> list[Any]:
         """Some models want an instruction prefix on queries and not on
@@ -94,13 +94,22 @@ class SearchService:
         return [_to_chunk(point) for point in response.points]
 
     def _finish(
-        self, chunks: list[RetrievedChunk], top_k: int | None, started: float
+        self,
+        query: str,
+        chunks: list[RetrievedChunk],
+        top_k: int | None,
+        started: float,
     ) -> SearchResult:
         cut = adaptive_cut(chunks, self._settings)
         selected = cut.chunks[:top_k] if top_k else cut.chunks
         latency = int((time.monotonic() - started) * 1000)
+        # The query text, not just the outcome. Without it a log line answers
+        # "did search work" but not "on what", which is what makes a live
+        # instance's activity legible after the fact rather than only in the
+        # moment a request is being watched.
         log.info(
             "search",
+            query=query,
             k_used=len(selected),
             confidence=cut.confidence,
             latency_ms=latency,
