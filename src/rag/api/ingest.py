@@ -46,7 +46,7 @@ log = get_logger(__name__)
 # A preview, not the corpus. Returning every chunk of a 900 page PDF over JSON
 # would be the wrong default and the UI cannot render it anyway.
 PREVIEW_LIMIT = 12
-PREVIEW_CHARS = 600
+PREVIEW_CHARS = 1100
 
 UPLOAD_SOURCE = "upload"
 UPLOAD_DOMAIN = "upload.local"
