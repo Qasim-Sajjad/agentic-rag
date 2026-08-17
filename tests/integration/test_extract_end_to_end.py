@@ -66,6 +66,55 @@ async def test_the_same_bytes_produce_the_same_content_hash(service: ExtractServ
     assert first.content_hash == second.content_hash
 
 
+def a_three_page_pdf() -> bytes:
+    """Built here rather than committed, because the only thing this fixture
+    needs to be is more than one page long."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    for number in range(3):
+        page = doc.new_page()
+        page.insert_text((72, 72), f"Page {number + 1} of the report. " * 20)
+    content: bytes = doc.tobytes()
+    return content
+
+
+async def collect(service: ExtractService, content: bytes) -> list[tuple]:
+    seen: list[tuple] = []
+
+    def report(stage, done, total, detail=""):
+        seen.append((stage, done, total))
+
+    await service.extract(content, URL, "application/pdf", report)
+    return seen
+
+
+async def test_the_probe_reports_each_page_as_it_reads_it(service: ExtractService):
+    """Table detection costs roughly 240 ms a page, so on a long document this
+    stage is minutes. Reported per page or it is minutes of silence."""
+    seen = await collect(service, a_three_page_pdf())
+    probes = [row for row in seen if row[0] == "probe"]
+    assert probes[:3] == [("probe", 1, 3), ("probe", 2, 3), ("probe", 3, 3)]
+
+
+async def test_extraction_announces_itself_before_the_first_range_finishes(
+    service: ExtractService,
+):
+    """A stage that is absent from the progress list reads as a stage that has
+    not started, which on a long parse is the wrong thing to tell a caller."""
+    seen = await collect(service, a_three_page_pdf())
+    extracts = [row for row in seen if row[0] == "extract"]
+    assert extracts[0][1] == 0
+    assert extracts[-1][1] == extracts[-1][2]
+
+
+async def test_extraction_without_a_progress_sink_still_parses(
+    service: ExtractService,
+):
+    doc = await service.extract(a_three_page_pdf(), URL, "application/pdf")
+    assert "Page 3 of the report" in doc.text
+
+
 async def test_csv_becomes_one_markdown_table(service: ExtractService):
     csv = b"Segment,Revenue\nSubscription,26.0\nServices,15.2\n"
     doc = await service.extract(csv, "https://example.test/data.csv", "text/csv")

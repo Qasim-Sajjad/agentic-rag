@@ -5,6 +5,7 @@ Dedup runs at three points, each one saving the cost of the stage after it.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,6 +21,8 @@ from rag.index.simhash import SimHashIndex, simhash
 from rag.index.store import VectorStore
 from rag.index.types import Chunk, ChunkMetadata
 from rag.log import get_logger
+from rag.progress import Progress
+from rag.progress import silent as _silent
 
 log = get_logger(__name__)
 
@@ -77,21 +80,29 @@ class IngestPipeline:
         self._near = SimHashIndex(deps.settings.simhash_hamming_threshold)
 
     async def ingest(
-        self, doc: CanonicalDoc, source_id: str, fetch_tier: int = 0
+        self,
+        doc: CanonicalDoc,
+        source_id: str,
+        fetch_tier: int = 0,
+        progress: Progress | None = None,
     ) -> IngestResult:
         stages: list[StageTiming] = []
+        report = progress if progress is not None else _silent
         with _timed(stages, "dedup"):
             skip = await self._duplicate_reason(doc)
         if skip is not None:
+            report("dedup", 1, 1, skip)
             return IngestResult(doc.doc_id, 0, 0, skip, stages=tuple(stages))
+        report("dedup", 1, 1, "not a duplicate")
         await self._deps.documents.save(doc, source_id, fetch_tier)
         with _timed(stages, "chunk"):
             chunks = await self._fresh_chunks(doc, source_id, fetch_tier)
+        report("chunk", len(chunks), len(chunks), f"{len(chunks)} fresh chunks")
         if not chunks:
             return IngestResult(
                 doc.doc_id, 0, 0, "all chunks were duplicates", stages=tuple(stages)
             )
-        written = await self._embed_and_write(chunks, stages)
+        written = await self._embed_and_write(chunks, stages, report)
         return IngestResult(
             doc.doc_id,
             len(chunks),
@@ -113,8 +124,13 @@ class IngestPipeline:
     async def _fresh_chunks(
         self, doc: CanonicalDoc, source_id: str, fetch_tier: int
     ) -> list[Chunk]:
-        chunks = self._chunker.chunk(
-            doc, chunk_metadata(doc, source_id, fetch_tier, self._deps.settings)
+        # Chunking is pure CPU and walks every block of the document. Threaded
+        # for the same reason extraction is: a long document must not stall the
+        # event loop and time out unrelated requests.
+        chunks = await asyncio.to_thread(
+            self._chunker.chunk,
+            doc,
+            chunk_metadata(doc, source_id, fetch_tier, self._deps.settings),
         )
         known = await self._deps.chunks.known_hashes(
             [chunk.metadata.chunk_hash for chunk in chunks]
@@ -122,22 +138,34 @@ class IngestPipeline:
         return [chunk for chunk in chunks if chunk.metadata.chunk_hash not in known]
 
     async def _embed_and_write(
-        self, chunks: list[Chunk], stages: list[StageTiming]
+        self, chunks: list[Chunk], stages: list[StageTiming], report: Progress
     ) -> int:
+        """The long stage on any real document, so it reports per batch.
+
+        On a 500 page PDF this is thousands of chunks at CPU embedding speed:
+        without per batch reporting the caller sees one silent stage for minutes
+        and cannot tell progress from a hang.
+        """
         batch_size = self._deps.settings.embed_batch_size
         written = 0
         embed_ms = 0.0
         store_ms = 0.0
+        # Announced before the first batch. The model loads on first use, which
+        # on a cold process is a slow minute with nothing to show for it, and an
+        # absent stage reads as a stage that has not started.
+        report("embed", 0, len(chunks), f"batches of {batch_size}")
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
             began = time.perf_counter()
             vectors = await self._deps.embedder.embed([c.embed_text for c in batch])
             embed_ms += (time.perf_counter() - began) * 1000
+            report("embed", min(start + len(batch), len(chunks)), len(chunks))
             began = time.perf_counter()
             stamped = _stamped(batch, self._deps.embedder.model_name)
             await self._deps.chunks.save_many(stamped)
             written += await self._deps.store.upsert(stamped, vectors)
             store_ms += (time.perf_counter() - began) * 1000
+            report("store", written, len(chunks))
         stages.append(StageTiming("embed", round(embed_ms)))
         stages.append(StageTiming("store", round(store_ms)))
         return written

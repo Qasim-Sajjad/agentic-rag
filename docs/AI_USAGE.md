@@ -226,6 +226,55 @@ Not done: no spend cap on either metered path. Both are billed per call, both ar
 recorded as gaps rather than guarded, and a per source budget with a hard stop is
 the missing control.
 
+### 2026-08-17, session 8, long document performance and background ingest
+Tool: Claude Code (Opus 5)
+Asked for: A 500 page PDF could not be ingested during a live demo. Find out why,
+fix it, and make chunking, indexing and retrieval report their individual steps
+rather than one silent stage.
+Kept: The measurement approach. Before changing anything I timed the stages
+separately on a real report: plain `get_text()` at 6.85 ms per page,
+`find_tables()` at 241 ms, `pymupdf4llm.to_markdown()` at 1,289 to 5,863 ms,
+which is 11 to 49 minutes for 500 pages and explains the demo exactly.
+Corrected: The diagnosis, twice. The first suspect was OCR, and `use_ocr=False`
+changed nothing. The actual cause was that `pymupdf-layout` and `rapidocr` being
+installed make `pymupdf4llm` take a GNN layout and OCR path on every page,
+including pages with a perfectly good text layer, silently overriding the
+architecture's own scanned page gate. The public `use_layout(False)` switch gave
+8 to 11x for 0.7 percent less text.
+Corrected: The claim in DESIGN.md that page ranges ran in parallel. `plan_ranges`
+split the document and the caller then awaited each range one at a time, so the
+split was bookkeeping. `gather` with a semaphore made it real, and the ranges now
+visibly complete out of order.
+Rewrote: The synchronous ingest request. A long document held one HTTP request
+open for minutes, which is a guaranteed client timeout, and worse, a caller
+could not tell a slow success from a hang. `?background=true` returns a job id
+and 202, and the progress a caller polls for is the same `Progress` sink the
+pipeline reports to, so nothing is measured twice or reported that did not
+happen. The `Progress` protocol went at the package root rather than in either
+module, because extract and index both report and neither may import the other.
+Mine, not the tool's: that `parse` keeps its two argument protocol shape and
+`parse_progress` is a separate method found by `getattr`, so adding progress did
+not change the contract every other parser implements. Also that a failed fetch
+stays a `done` job with `ok: false`, and only an unexpected exception is a
+`failed` one: a site refusing is a result, not an error.
+Corrected: my own first version of the threading fix. `BGEM3Embedder.embed`
+called `self._load()` on the event loop and only the `encode` inside a thread,
+so the two gigabyte model load still froze every poll. Caught by running a real
+40 page ingest against the server and watching a poll time out at 30 seconds,
+not by reading the code, which had looked right to me.
+Verified: ruff and mypy clean on 77 files, 433 tests, and a real 40 page PDF
+ingested through the running server while polling once a second. Every stage
+appeared as it happened: `probe 12/40`, `extract 0/1`, `chunk 80/80`,
+`embed 32/80`, `store 80/80`, ending with 80 chunks and 80 vectors. Slowest poll
+during the run was 2.4 seconds, against a 30 second timeout before the fix.
+Not done: embedding is now the bottleneck and it is hardware, not code. BGE-M3
+on this CPU measures about 6 seconds per chunk, so the 500 page document that
+failed the interview is still hours of embedding, now visible and attributable
+instead of a request that never returns. A GPU or a smaller model is the fix and
+neither is wired. `find_tables()` still runs during the probe for a page class
+that no longer selects a parser, job state is in memory and per process, and a
+job cannot be cancelled. All recorded as gaps.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

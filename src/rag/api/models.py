@@ -10,7 +10,7 @@ from rag.agent.state import TraceStep
 from rag.mcp.schemas import MAX_TOP_K
 from rag.prompts.render import StrippedMarker
 from rag.prompts.validate import Citation, ValidationReport
-from rag.retrieve.types import RetrievedChunk, SearchFilters
+from rag.retrieve.types import RetrievalStep, RetrievedChunk, SearchFilters
 
 
 class SearchRequest(BaseModel):
@@ -25,6 +25,9 @@ class SearchResponse(BaseModel):
     chunks: list[RetrievedChunk]
     confidence: Literal["high", "low", "none"]
     k_used: int
+    # The funnel, stage by stage. Retrieval is five steps and a total latency
+    # cannot say which of them cost the time or dropped the chunk.
+    steps: list[RetrievalStep] = Field(default_factory=list)
     latency_ms: int
 
 
@@ -147,6 +150,48 @@ class IngestTraceResponse(BaseModel):
     chunk_preview: list[ChunkPreview] = Field(default_factory=list)
     failure: IngestFailure | None = None
     latency_ms: int = 0
+
+
+class ProgressRow(BaseModel):
+    """One stage's latest position while the job is still running.
+
+    `total` is 0 when the stage cannot know it in advance, which a client should
+    render as indeterminate rather than as 0%.
+    """
+
+    stage: str
+    done: int
+    total: int
+    detail: str = ""
+
+
+class IngestJobAccepted(BaseModel):
+    """The 202 body. Deliberately minimal: an id and where to poll it."""
+
+    job_id: str
+    status: str
+    poll: str
+
+
+class IngestJobStatus(BaseModel):
+    """`progress` is the live view, `result` only appears once status is done.
+
+    Both are present rather than one replacing the other, so a client polling
+    the same shape throughout never has to switch how it reads the response.
+    """
+
+    job_id: str
+    kind: str
+    label: str
+    status: str
+    elapsed_ms: int
+    progress: list[ProgressRow] = Field(default_factory=list)
+    result: IngestTraceResponse | None = None
+    error: str | None = None
+
+
+class IngestJobList(BaseModel):
+    jobs: list[IngestJobStatus] = Field(default_factory=list)
 
 
 class SourceStatusRow(BaseModel):

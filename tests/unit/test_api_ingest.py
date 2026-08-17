@@ -91,8 +91,9 @@ class FakeExtract:
         self.error = error
         self.calls = []
 
-    async def extract(self, content, source_url, content_type):
+    async def extract(self, content, source_url, content_type, progress=None):
         self.calls.append((source_url, content_type))
+        self.progress = progress
         if self.error is not None:
             raise self.error
         return self.doc.model_copy(update={"source_url": source_url})
@@ -103,8 +104,9 @@ class FakePipeline:
         self.result = result
         self.calls = []
 
-    async def ingest(self, doc, source_id, fetch_tier=0):
+    async def ingest(self, doc, source_id, fetch_tier=0, progress=None):
         self.calls.append((doc.doc_id, source_id, fetch_tier))
+        self.progress = progress
         return self.result
 
 
@@ -316,6 +318,40 @@ async def test_the_happy_path_reports_every_stage_in_pipeline_order():
     assert response.chunks_written == 1
     assert response.vectors_written == 1
     assert response.doc_id == "doc1"
+
+
+async def test_progress_is_reported_while_the_ingest_runs():
+    """The trace arrives at the end. Progress is what a caller polling a job
+    sees before then, so it has to be reported as the stages happen."""
+    seen = []
+    deps = build_deps()
+    await ingest_url(
+        IngestUrlRequest(url="https://quotes.test/1"),
+        deps,
+        lambda stage, done, total, detail="": seen.append((stage, done, total)),
+    )
+    assert [row[0] for row in seen] == ["fetch", "fetch"]
+    assert seen[-1] == ("fetch", 1, 1)
+
+
+async def test_the_progress_sink_reaches_extraction_and_indexing():
+    """Reported by those modules, not by the API. Passing it down is the whole
+    reason `Progress` lives at the package root."""
+    deps = build_deps()
+
+    def report(stage, done, total, detail=""):
+        return None
+
+    await ingest_url(IngestUrlRequest(url="https://quotes.test/1"), deps, report)
+    assert deps.extract.progress is report
+    assert deps.pipeline.progress is report
+
+
+async def test_an_ingest_without_a_progress_sink_still_runs():
+    """`progress` is optional, and the endpoint that waits does not pass one."""
+    request = IngestUrlRequest(url="https://quotes.test/1")
+    response = await ingest_url(request, build_deps())
+    assert response.ok is True
 
 
 async def test_stage_latencies_come_from_the_pipeline_and_are_not_invented():

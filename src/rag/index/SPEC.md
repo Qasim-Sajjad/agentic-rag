@@ -195,6 +195,17 @@ two things a caller cannot reconstruct without doing the work twice:
 This exists so `POST /ingest/url` can report the pipeline honestly, see
 `src/rag/api/SPEC.md`. The pipeline itself neither knows nor cares who reads it.
 
+`ingest` also takes an optional `progress` sink, the `Progress` shape defined in
+`src/rag/progress.py`. `stages` is what happened, reported at the end; `progress`
+is where the work is now, reported as it happens. It reports `dedup` once,
+`chunk` with the fresh chunk count, then `embed` and `store` per batch, so a
+thousand chunk document is a moving position rather than several silent minutes.
+Omitting the sink changes nothing: the default reports nowhere.
+
+Chunking runs in a worker thread. It is pure CPU over every block of the
+document, and on the event loop a long document stalls every request the API
+process is serving concurrently, which reads as a hung server.
+
 ## Demo entry point
 
 Exists for live demonstration and manual verification. Two subcommands, both
@@ -262,9 +273,16 @@ web moved. That asymmetry is the entire reason intermediate artifacts persist.
   exceeds `max_tokens`, every chunk has a non empty `section_path`
 - Upsert: idempotent on rerun, correct payload indexes created
 - Re-embed: named vector added without touching existing points
+- The progress sink reports `dedup`, `chunk`, `embed` and `store`, each stage
+  once rather than once per batch
 
 ## Known gaps
 
 Contextual retrieval (an LLM generated situating sentence per chunk) is not
 implemented. It is a known recall improvement, but it costs 500K LLM calls even
 with prompt caching. Noted as future work with the cost stated.
+
+`ChunkRepository.save_many` issues one INSERT per chunk. On a 500 page document
+that is thousands of round trips against a local Postgres, measured at a few
+percent of ingest time and therefore not the bottleneck, but it should be a
+single multi row INSERT or a COPY.

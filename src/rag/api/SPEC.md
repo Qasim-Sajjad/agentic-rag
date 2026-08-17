@@ -34,8 +34,16 @@ Semantic search. No LLM in the path.
 
 ```
 Request:  {query, top_k?, filters?}
-Response: {chunks: [...], confidence, k_used, latency_ms}
+Response: {chunks: [...], confidence, k_used,
+           steps: [{stage, candidates, latency_ms, note}], latency_ms}
 ```
+
+`steps` is the retrieval funnel, five stages in order: `embed query`,
+`vector search`, `fuse`, `rerank`, `adaptive cut`. `candidates` is how many
+chunks left each stage, which is what makes a missing result diagnosable: a
+pool of 100 fused to 60, reranked, then cut to 4 by the score floor says where
+the chunk went. Each `latency_ms` is the gap since the previous stage, so they
+sum to the total rather than each repeating it.
 
 ```bash
 curl -X POST localhost:8000/search \
@@ -147,6 +155,7 @@ Runs one URL through fetch, extract, dedup, chunk, embed and store, and reports
 each stage.
 
 ```
+Query:    ?background=true to get a job id instead of waiting
 Request:  {url, source_id?, register_domain?, allow_unlocker?}
 Response: {ok, source_id, source_url, doc_id, doc_type, title,
            stages: [{name, status, latency_ms, detail, note}],
@@ -165,7 +174,7 @@ are accumulated separately in the loop rather than split by guesswork after.
 `dedup`, and the stages after it are absent, because they did not run. Reporting
 them as zeroes would claim work that never happened.
 
-`chunk_preview` is a preview: at most 12 chunks, each truncated to 600
+`chunk_preview` is a preview: at most 12 chunks, each truncated to 1100
 characters with `truncated: true` when it was cut. Returning every chunk of a
 900 page PDF over JSON is the wrong default.
 
@@ -201,6 +210,7 @@ The same path minus the fetch. Multipart upload, one `file` field. PDF, DOCX,
 XLSX, CSV, text or HTML, routed on magic bytes rather than on the declared type.
 
 ```
+Query:    ?background=true, as on /ingest/url
 Request:  multipart/form-data, field `file`
 Response: the same shape, with an `upload` stage in place of `fetch`
 ```
@@ -215,6 +225,47 @@ dedup instead of duplicating the corpus.
 curl -X POST localhost:8000/ingest/file \
   -H "X-API-Key: $API_KEY" -F "file=@report.pdf"
 ```
+
+### GET /ingest/jobs/{job_id}
+
+Progress of a background ingest, and its result once it has one.
+
+```
+Response: {job_id, kind, label, status, elapsed_ms,
+           progress: [{stage, done, total, detail}],
+           result?: <the /ingest/url response>, error?}
+```
+
+`status` is `running`, `done` or `failed`. `result` appears only once the job is
+`done` and is byte for byte the response the blocking call would have returned,
+so a client reads one shape throughout and never needs two code paths.
+
+`progress` exists because a 500 page PDF is minutes of extraction and embedding.
+Held open as one HTTP request that is a guaranteed client timeout, and worse, a
+caller cannot tell a slow success from a hang. Each stage reports its latest
+position: `probe 500/500`, `extract 3/8 ranges`, `embed 640/2500`. A stage is
+replaced in place rather than appended, because embedding reports per batch and
+a caller wants the position, not hundreds of rows of history. `total` is `0`
+where a stage cannot know it in advance, which is indeterminate and not zero
+percent.
+
+`failed` means an unexpected exception, and `error` carries its type and
+message. A refused fetch is not this: it completes as `done` with `ok: false`
+and a typed reason in the trace, the same as on the blocking call.
+
+### GET /ingest/jobs
+
+The last few jobs, newest first, same shape per job.
+
+```
+Query:    ?limit=20
+Response: {jobs: [ ... ]}
+```
+
+In memory and bounded, 50 jobs, oldest evicted. A job describes work in flight,
+not a durable record: by the time one is `done` the corpus itself is in Postgres
+and Qdrant. A restart losing job history is acceptable, losing a chunk is not.
+Recorded under Known gaps.
 
 ### GET /ingest/status
 
@@ -302,6 +353,15 @@ Consistent shape, typed reason codes, never a stack trace.
 - A duplicate reports `dedup` as `skipped` and emits no later stages
 - Stage latencies come from the pipeline, so a fake pipeline's numbers appear
   verbatim and nothing is invented in the API layer
+- `?background=true` returns 202 with a job id and a poll path
+- A background job reaches `done` and its `result` is the same trace the
+  blocking call returns
+- A background job reports the `chunk`, `embed` and `store` stages it passed
+- Each stage appears once in `progress`, not once per batch
+- An unknown job id is 404, and the job endpoints are behind the same API key
+- `background` defaults to false, so the blocking contract is unchanged
+- The progress sink reaches extraction and indexing, and an ingest without one
+  still runs
 - The same uploaded bytes always produce the same synthetic url
 - A traversal filename cannot escape the synthetic url
 - Tenant from the key reaches the MCP boundary and cannot be overridden by the
@@ -320,9 +380,13 @@ Consistent shape, typed reason codes, never a stack trace.
   value, so nothing is wrong today, but a second tenant would be able to write
   documents that land in the first tenant's namespace. The write path needs the
   same tenant injection the read path already has
-- Ingestion is synchronous. A long PDF holds the request open for the whole
-  embed. It should be a job id plus a poll, which is also what would let the UI
-  show stages as they happen rather than all at once when the call returns
+- Job state is in memory and per process. A restart loses the history of what
+  ran, and a second API process would not see the first one's jobs. Neither
+  matters while Qdrant in process makes this the only writer there can be, and
+  the corpus is durable regardless, but a multi process deployment would need
+  the job table in Postgres
+- A background job cannot be cancelled. Nothing here kills a fetch or an embed
+  in flight, so a job started by mistake runs to completion
 - No delete endpoint. Qdrant is a derived index that currently only grows.
   Deleting a `document` row cascades to its chunks in Postgres and leaves the
   vectors orphaned. Re-ingesting the same document overwrites its points,

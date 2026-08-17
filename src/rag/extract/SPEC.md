@@ -97,11 +97,23 @@ Routing:
 | Condition | Parser |
 |---|---|
 | Text layer, single column, no tables | `PyMuPDF4LLMParser` |
-| Text layer, tables or multi column | `DoclingParser` |
+| Text layer, tables or multi column | `PyMuPDF4LLMParser` |
 | No usable text layer | `VLMOCRParser` |
 
-Disable Docling's table and OCR models when gate 2 found neither. Running
-TableFormer on prose is the largest avoidable cost in this stage.
+Both text classes route to `PyMuPDF4LLMParser`. `pymupdf4llm` already emits
+tables as Markdown, and measured against it Docling cost roughly ten times as
+much per page for output the chunker treats identically. Gate 2 is still
+computed, because `page_class` is what the trace reports and what an OCR
+decision is made from, but it no longer selects a different parser.
+
+`pymupdf4llm` must be configured with `use_layout(False)`, which
+`configure_layout` in `src/rag/extract/pdf.py` sets from
+`extract.pymupdf_use_layout` (default false). With `pymupdf-layout` and
+`rapidocr` installed, `pymupdf4llm` otherwise takes a GNN layout and OCR path on
+every page whether or not it has a text layer, silently overriding gate 1.
+Measured on a real report: 2583 ms per page with, 227 ms without, for 0.7 percent
+less text. That switch is the difference between a 500 page document taking
+forty minutes and taking four.
 
 ## Page range parallelism
 
@@ -109,9 +121,26 @@ Split every PDF into ranges of `pages_per_task` (default 50) before parsing.
 Each range is an independent task with its own checkpoint. A 1000 page document
 becomes 20 tasks, not one long worker lock.
 
+Ranges run concurrently, bounded by `extract.max_parallel_ranges` (default 4).
+Each range is synchronous PyMuPDF work and runs in a worker thread, as does the
+initial probe: a 500 page extract on the event loop stalls every other request
+the API is serving, which reads as a hung server rather than a slow one.
+
 Reassembly concatenates ranges in page order and runs one fixup pass: a table
 at the top of a range with the same column count as the table ending the
-previous range, and no header row, is merged into it.
+previous range, and no header row, is merged into it. `gather` preserves input
+order, so the fixup still sees a split table's two halves adjacent no matter
+which range finished first.
+
+## Progress
+
+`PdfRouter.parse_progress(content, source_url, progress)` does the same work as
+`parse` and reports each stage to the `Progress` sink in `src/rag/progress.py`:
+`probe` once with the range count, then `extract` per completed range. `parse`
+itself stays two arguments, so the `DocumentParser` protocol every other parser
+implements is unchanged, and `ExtractService` looks for `parse_progress` the way
+retrieval looks for `embed_queries`. A minutes long extract that reports nothing
+cannot be told apart from one that has hung.
 
 ## OCR
 
@@ -187,5 +216,9 @@ dropped tables, merged columns, lost headings.
   expensive, and nothing here stops it.
 - OCR output is not evaluated. There is no gold transcription set, so accuracy
   on tables and multi column layout is unmeasured.
+- `DoclingParser` is still wired for DOCX and XLSX but no longer reachable from
+  the PDF ladder, so the COMPLEX_TEXT page class no longer changes what runs.
+  Gate 2's table detection costs roughly 240 ms per page for a distinction that
+  now only appears in the trace.
 - Div based HTML table layouts are not reconstructed.
 - Images and figures are captured as captions only. No image embedding.

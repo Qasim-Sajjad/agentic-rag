@@ -106,7 +106,8 @@ class FetchService:
         """Never raises for an expected failure. Returns `FetchFailure` instead."""
         source = await self._source_for(url)
         state = await self._deps.registry.state(source.source_id)
-        # If the circuit breaker is open, that means its last failure was persistent and the site is still blocking us.
+        # If the circuit breaker is open, that means its last failure was
+        # persistent and the site is still blocking us.
         denied = self._circuit_denial(url, state)
         if denied is not None:
             return denied
@@ -114,7 +115,6 @@ class FetchService:
         disallowed = await self._robots_denial(source, url)
         if disallowed is not None:
             return disallowed
-        #
         await self._deps.limiter.acquire(source.domain, source.effective_rate)
         return await self._climb(url, source, state)
 

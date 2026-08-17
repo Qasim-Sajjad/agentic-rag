@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from rag.config.settings import QdrantSettings, RetrieveSettings
@@ -14,6 +14,7 @@ from rag.retrieve.adaptive import adaptive_cut
 from rag.retrieve.fusion import reciprocal_rank_fusion
 from rag.retrieve.types import (
     Reranker,
+    RetrievalStep,
     RetrievedChunk,
     SearchFilters,
     SearchResult,
@@ -31,12 +32,41 @@ class RetrieveDependencies:
     qdrant: QdrantSettings
 
 
+@dataclass
+class _Steps:
+    """Stage timings collected as the search runs.
+
+    Each `mark` measures the gap since the previous one rather than since the
+    start, so the numbers add up to the total instead of being cumulative. Held
+    in one object so `_finish` stays inside the argument limit.
+    """
+
+    began: float = field(default_factory=time.monotonic)
+    rows: list[RetrievalStep] = field(default_factory=list)
+    _at: float = field(default_factory=time.monotonic)
+
+    def mark(self, stage: str, candidates: int, note: str = "") -> None:
+        now = time.monotonic()
+        self.rows.append(
+            RetrievalStep(
+                stage=stage,
+                candidates=candidates,
+                latency_ms=round((now - self._at) * 1000),
+                note=note,
+            )
+        )
+        self._at = now
+
+    def elapsed_ms(self) -> int:
+        return int((time.monotonic() - self.began) * 1000)
+
+
 class SearchService:
     def __init__(self, deps: RetrieveDependencies) -> None:
         self._deps = deps
         self._settings = deps.settings
 
-    # get the ranked chunks of the query, with optional filters and top_k limit. 
+    # get the ranked chunks of the query, with optional filters and top_k limit.
     # The returned chunks are already reranked.
     async def search(
         self,
@@ -44,14 +74,21 @@ class SearchService:
         filters: SearchFilters | None = None,
         top_k: int | None = None,
     ) -> SearchResult:
-        started = time.monotonic()
+        steps = _Steps()
         embedding = (await self._embed_query(query))[0]
+        steps.mark("embed query", 1, self._deps.embedder.model_name)
         dense, sparse = await self._both_sides(embedding, filters)
-        fused = reciprocal_rank_fusion([dense, sparse], self._settings.rrf_k)
-        reranked = await self._deps.reranker.rerank(
-            query, fused[: self._settings.rerank_pool]
+        steps.mark(
+            "vector search",
+            len(dense) + len(sparse),
+            f"dense {len(dense)}, sparse {len(sparse)}",
         )
-        return self._finish(query, reranked, top_k, started)
+        fused = reciprocal_rank_fusion([dense, sparse], self._settings.rrf_k)
+        steps.mark("fuse", len(fused), f"reciprocal rank, k={self._settings.rrf_k}")
+        pool = fused[: self._settings.rerank_pool]
+        reranked = await self._deps.reranker.rerank(query, pool)
+        steps.mark("rerank", len(reranked), self._deps.reranker.name)
+        return self._finish(query, reranked, top_k, steps)
 
     async def _embed_query(self, query: str) -> list[Any]:
         """Some models want an instruction prefix on queries and not on
@@ -100,11 +137,13 @@ class SearchService:
         query: str,
         chunks: list[RetrievedChunk],
         top_k: int | None,
-        started: float,
+        steps: _Steps,
     ) -> SearchResult:
         cut = adaptive_cut(chunks, self._settings)
         selected = cut.chunks[:top_k] if top_k else cut.chunks
-        latency = int((time.monotonic() - started) * 1000)
+        note = cut.reason or f"confidence {cut.confidence}"
+        steps.mark("adaptive cut", len(selected), note)
+        latency = steps.elapsed_ms()
         # The query text, not just the outcome. Without it a log line answers
         # "did search work" but not "on what", which is what makes a live
         # instance's activity legible after the fact rather than only in the
@@ -121,6 +160,7 @@ class SearchService:
             confidence=cut.confidence,
             k_used=len(selected),
             reason=cut.reason,
+            steps=steps.rows,
             latency_ms=latency,
         )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from rag.agent.graph import AgentRunner
 from rag.agent.llm import ScriptedClient
 from rag.agent.nodes import NodeDependencies
 from rag.api.deps import AppContext, TTLCache, build_ingest
+from rag.api.jobs import JobStore
 from rag.api.main import create_app
 from rag.clock import SystemClock
 from rag.config.settings import (
@@ -100,6 +102,7 @@ async def build_context(db: Database, tmp_path: Path, explain: bool) -> AppConte
         # lazily, so building all four tiers costs nothing here.
         ingest=build_ingest(db, store, embedder, fetchers, settings),
         fetchers=fetchers,
+        jobs=JobStore(),
     )
 
 
@@ -168,9 +171,119 @@ async def test_ingest_url_refuses_an_unregistered_domain_with_200(
     assert body["stages"] == []
 
 
+async def wait_for_job(client: httpx.AsyncClient, job_id: str) -> dict:
+    """Polls the way a client does. Ten seconds is far longer than a two line
+    text file needs and short enough to fail rather than hang."""
+    for _ in range(200):
+        body = (await client.get(f"/ingest/jobs/{job_id}", headers=HEADERS)).json()
+        if body["status"] != "running":
+            return body
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"job {job_id} never left running")
+
+
+async def test_a_background_ingest_returns_202_and_a_job_id(
+    client: httpx.AsyncClient,
+):
+    """202 rather than 200: the work was accepted, it has not happened yet."""
+    response = await client.post(
+        "/ingest/file?background=true",
+        files={"file": ("note.txt", b"# Heading\n\nRevenue grew in the quarter.\n")},
+        headers=HEADERS,
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["poll"] == f"/ingest/jobs/{body['job_id']}"
+
+
+async def test_a_background_ingest_finishes_and_carries_the_same_trace(
+    client: httpx.AsyncClient,
+):
+    """The polled result is the response the blocking call would have returned,
+    so a client does not need two ways of reading an ingest."""
+    accepted = await client.post(
+        "/ingest/file?background=true",
+        files={"file": ("note.txt", b"# Heading\n\nRevenue grew in the quarter.\n")},
+        headers=HEADERS,
+    )
+    body = await wait_for_job(client, accepted.json()["job_id"])
+    assert body["status"] == "done", body.get("error")
+    assert body["result"]["ok"] is True
+    assert body["result"]["chunks_written"] >= 1
+
+
+async def test_a_background_ingest_reports_the_stages_it_passed_through(
+    client: httpx.AsyncClient,
+):
+    """The point of the job: progress that names steps, not a spinner."""
+    accepted = await client.post(
+        "/ingest/file?background=true",
+        files={"file": ("note.txt", b"# Heading\n\nRevenue grew in the quarter.\n")},
+        headers=HEADERS,
+    )
+    body = await wait_for_job(client, accepted.json()["job_id"])
+    stages = {row["stage"] for row in body["progress"]}
+    assert {"chunk", "embed", "store"} <= stages
+
+
+async def test_a_background_ingest_reports_each_stage_once(
+    client: httpx.AsyncClient,
+):
+    """Embedding reports per batch. A caller wants the latest position, not the
+    history, so a stage is replaced in place rather than appended."""
+    accepted = await client.post(
+        "/ingest/file?background=true",
+        files={"file": ("note.txt", b"# Heading\n\nRevenue grew in the quarter.\n")},
+        headers=HEADERS,
+    )
+    body = await wait_for_job(client, accepted.json()["job_id"])
+    stages = [row["stage"] for row in body["progress"]]
+    assert len(stages) == len(set(stages))
+
+
+async def test_a_background_ingest_is_listed(client: httpx.AsyncClient):
+    accepted = await client.post(
+        "/ingest/file?background=true",
+        files={"file": ("note.txt", b"# Heading\n\nRevenue grew in the quarter.\n")},
+        headers=HEADERS,
+    )
+    job_id = accepted.json()["job_id"]
+    await wait_for_job(client, job_id)
+    listed = await client.get("/ingest/jobs", headers=HEADERS)
+    assert job_id in {row["job_id"] for row in listed.json()["jobs"]}
+
+
+async def test_an_unknown_job_id_is_a_404(client: httpx.AsyncClient):
+    response = await client.get("/ingest/jobs/nosuchjob", headers=HEADERS)
+    assert response.status_code == 404
+
+
+async def test_the_job_endpoints_are_behind_the_same_key(client: httpx.AsyncClient):
+    assert (await client.get("/ingest/jobs")).status_code == 401
+    assert (await client.get("/ingest/jobs/anything")).status_code == 401
+
+
+async def test_a_blocking_ingest_still_returns_the_trace(client: httpx.AsyncClient):
+    """`background` defaults to false, so the existing contract is unchanged."""
+    response = await client.post(
+        "/ingest/file",
+        files={"file": ("note.txt", b"# Heading\n\nRevenue grew in the quarter.\n")},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
 async def test_search_returns_its_documented_shape(client: httpx.AsyncClient):
     response = await client.post("/search", json={"query": "revenue"}, headers=HEADERS)
-    assert set(response.json()) == {"chunks", "confidence", "k_used", "latency_ms"}
+    assert set(response.json()) == {
+        "chunks",
+        "confidence",
+        "k_used",
+        "steps",
+        "latency_ms",
+    }
 
 
 async def test_search_rejects_a_top_k_over_the_cap(client: httpx.AsyncClient):

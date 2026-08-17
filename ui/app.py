@@ -17,6 +17,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -25,12 +26,24 @@ import httpx
 import streamlit as st
 
 DEFAULT_BASE = "http://127.0.0.1:8000"
-DEFAULT_KEY = "dev-key"
+DEFAULT_KEY = "ad33b0c529e8489bf348a6010d397f5c"
 
-# A URL that escalates to a browser tier, then embeds a long PDF, is minutes of
-# real work. A short timeout here would report a failure the server never had.
+# The submit call returns a job id and comes back at once. This timeout covers
+# sending the bytes of a large upload, not the work that follows them.
 INGEST_TIMEOUT = 900.0
 QUERY_TIMEOUT = 300.0
+
+# One second is fast enough to watch and slow enough that a 500 page document
+# does not spend its time answering polls. The limit is an hour, past which
+# something is wrong and a spinner is a lie.
+POLL_SECONDS = 1.0
+POLL_LIMIT = 3600
+
+# Results live in session state, because a widget click reruns this script from
+# the top and anything drawn inline would disappear with it.
+TRACE_KEY = "ingest_trace"
+SEARCH_KEY = "search_body"
+AGENT_KEY = "agent_body"
 
 UPLOAD_TYPES = ["pdf", "docx", "txt", "md", "html", "htm"]
 DOC_TYPES = ["", "html", "pdf", "office", "text"]
@@ -183,6 +196,10 @@ def ingest_tab(api: Api) -> None:
         _ingest_url_panel(api)
     else:
         _ingest_file_panel(api)
+    recent_jobs(api)
+    trace = st.session_state.get(TRACE_KEY)
+    if trace:
+        render_trace(trace)
 
 
 def _ingest_url_panel(api: Api) -> None:
@@ -213,12 +230,11 @@ def _ingest_url_panel(api: Api) -> None:
     }
     if source_id.strip():
         payload["source_id"] = source_id.strip()
-    trace = _run(
-        lambda: api.post("/ingest/url", payload, INGEST_TIMEOUT),
-        "Fetching, extracting, chunking, embedding",
+    accepted = _run(
+        lambda: api.post("/ingest/url?background=true", payload, INGEST_TIMEOUT),
+        "Starting the pipeline",
     )
-    if trace is not None:
-        render_trace(trace)
+    _watch(api, accepted)
 
 
 def _ingest_file_panel(api: Api) -> None:
@@ -232,12 +248,114 @@ def _ingest_file_panel(api: Api) -> None:
     if chosen is None or not st.button("Run the pipeline", key="run-file"):
         return
     upload = Upload(chosen.name, chosen.getvalue(), chosen.type or "")
-    trace = _run(
-        lambda: api.upload("/ingest/file", upload, INGEST_TIMEOUT),
-        f"Extracting and indexing {chosen.name}",
+    accepted = _run(
+        lambda: api.upload("/ingest/file?background=true", upload, INGEST_TIMEOUT),
+        f"Uploading {chosen.name}",
     )
-    if trace is not None:
-        render_trace(trace)
+    _watch(api, accepted)
+
+
+def _watch(api: Api, accepted: dict[str, Any] | None) -> None:
+    """Follows an accepted job to its end and keeps the trace it produced.
+
+    Kept in session state rather than rendered here, because every widget click
+    reruns this script from the top: a trace drawn inline would vanish the moment
+    a reader touched anything below it. The trace itself is the same object the
+    blocking endpoint returns, so what is shown is what was always shown, plus
+    the steps that happened on the way there.
+    """
+    if accepted is None:
+        return
+    st.session_state.pop(TRACE_KEY, None)
+    body = _follow(api, str(accepted.get("job_id", "")))
+    if body is None:
+        return
+    if body.get("status") == "failed":
+        st.error(f"The job failed. {body.get('error') or 'no reason recorded'}")
+        return
+    st.session_state[TRACE_KEY] = body.get("result") or {}
+
+
+def _follow(api: Api, job_id: str) -> dict[str, Any] | None:
+    """Polls until the job stops running, redrawing the stages in place.
+
+    Blocking rather than threaded, because Streamlit reruns this script top to
+    bottom and only the running script may draw. The point is that the steps
+    appear while the work is happening instead of arriving with the answer.
+    """
+    slot = st.empty()
+    for _ in range(POLL_LIMIT):
+        body = _poll(api, job_id)
+        if body is None:
+            return None
+        with slot.container():
+            _render_progress(body)
+        if body.get("status") != "running":
+            return body
+        time.sleep(POLL_SECONDS)
+    st.error(
+        f"Job `{job_id}` is still running after an hour. It has not been "
+        "cancelled: check Recent jobs below, or the server log."
+    )
+    return None
+
+
+def _poll(api: Api, job_id: str) -> dict[str, Any] | None:
+    """No spinner. One a second would flash rather than inform."""
+    try:
+        return api.get(f"/ingest/jobs/{job_id}", {}, QUERY_TIMEOUT)
+    except ApiError as exc:
+        st.error(str(exc))
+    except httpx.HTTPError as exc:
+        st.error(f"lost contact with the API while polling job {job_id}. {exc}")
+    return None
+
+
+def _render_progress(body: dict[str, Any]) -> None:
+    seconds = int(body.get("elapsed_ms") or 0) / 1000
+    st.caption(
+        f"job `{body.get('job_id', '')}` {body.get('status', '')}, "
+        f"{seconds:.1f}s elapsed"
+    )
+    for row in body.get("progress") or []:
+        _render_progress_row(row)
+
+
+def _render_progress_row(row: dict[str, Any]) -> None:
+    """A stage that cannot know its total reports 0, which is indeterminate and
+    not zero percent. Drawn as a line of text rather than an empty bar."""
+    done = int(row.get("done") or 0)
+    total = int(row.get("total") or 0)
+    stage = str(row.get("stage", ""))
+    label = f"{stage}  {done}/{total}" if total else f"{stage}  {done}"
+    detail = str(row.get("detail") or "")
+    if detail:
+        label = f"{label}  ·  {detail}"
+    if total:
+        st.progress(min(done / total, 1.0), text=label)
+    else:
+        st.caption(label)
+
+
+def recent_jobs(api: Api) -> None:
+    """Survives a browser reload, which a blocking poll does not. The store is
+    per process and bounded, so this is the last few ingests and nothing older."""
+    with st.expander("Recent jobs"):
+        if not st.button("Refresh", key="refresh-jobs"):
+            return
+        body = _run(lambda: api.get("/ingest/jobs", {}, QUERY_TIMEOUT), "Reading jobs")
+        if body is None:
+            return
+        for job in body.get("jobs") or []:
+            _render_job_row(job)
+
+
+def _render_job_row(job: dict[str, Any]) -> None:
+    seconds = int(job.get("elapsed_ms") or 0) / 1000
+    st.markdown(
+        f"- `{job.get('job_id', '')}`  {job.get('status', '')}  "
+        f"{seconds:.1f}s  {job.get('kind', '')}  {job.get('label', '')}"
+    )
 
 
 def render_trace(trace: dict[str, Any]) -> None:
@@ -295,23 +413,62 @@ def _render_chunks(trace: dict[str, Any]) -> None:
         return
     st.subheader(f"Chunks written ({len(chunks)} shown)")
     st.caption("A preview. The endpoint caps how many chunks and how many characters.")
+    raw = st.toggle(
+        "show the stored text instead of rendering it",
+        key="chunks-raw",
+        help=(
+            "Rendered is what the document said. Raw is what was stored and "
+            "embedded, which is the version a citation points at."
+        ),
+    )
     for chunk in chunks:
         path = " > ".join(chunk.get("section_path") or []) or "no section path"
         tokens = chunk.get("token_count")
         label = f"#{chunk.get('chunk_index')}  {tokens} tokens  {path}"
         with st.expander(label):
-            _render_chunk_body(chunk)
+            _render_chunk_body(chunk, raw)
 
 
-def _render_chunk_body(chunk: dict[str, Any]) -> None:
+def _render_chunk_body(chunk: dict[str, Any], raw: bool) -> None:
     if chunk.get("is_table"):
         st.caption("table chunk, kept whole rather than split mid row")
     if chunk.get("page_no") is not None:
         st.caption(f"page {chunk['page_no']}")
-    st.text(chunk.get("text", ""))
+    _render_chunk_text(str(chunk.get("text", "")), raw)
     if chunk.get("truncated"):
         st.caption("preview truncated by the endpoint")
     st.code(chunk.get("chunk_id", ""), language="text")
+
+
+def _render_chunk_text(text: str, raw: bool) -> None:
+    """Chunks are Markdown. The extractors emit headings, lists and pipe tables,
+    so a table shown as plain text is a wall of pipes and the one thing worth
+    checking, that the table survived chunking intact, is the hardest to see.
+
+    Rendered by default, raw behind the toggle above, because the stored text is
+    what gets embedded and a reviewer auditing the corpus wants those characters.
+    `unsafe_allow_html` stays off: this text comes from documents this system
+    does not control, and markup in one must not become markup here.
+    """
+    if raw:
+        st.text(text)
+        return
+    st.markdown(_markdown_safe(text))
+
+
+def _markdown_safe(text: str) -> str:
+    """A pipe table needs a blank line before it or Markdown reads it as part of
+    the preceding paragraph and renders one long line of pipes. Chunk text is a
+    slice of a document, so that separator is often exactly what got cut."""
+    lines = text.split("\n")
+    out: list[str] = []
+    for index, line in enumerate(lines):
+        starts_table = line.lstrip().startswith("|")
+        previous = lines[index - 1].strip() if index else ""
+        if starts_table and previous and not previous.startswith("|"):
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
 
 
 def _filters(source_id: str, doc_type: str) -> dict[str, Any]:
@@ -373,15 +530,22 @@ def _render_sources(order: list[str], citations: list[dict[str, Any]]) -> None:
         st.markdown(f"{number}. {url}  \n`{chunk_id}`")
 
 
-def _render_retrieved(chunks: list[dict[str, Any]]) -> None:
+def _render_retrieved(chunks: list[dict[str, Any]], key: str) -> None:
+    """`key` names the panel, because Streamlit widget keys are global and the
+    Agent and Search tabs both draw this."""
     if not chunks:
         return
     st.subheader(f"Retrieved chunks ({len(chunks)})")
+    raw = st.toggle(
+        "show the stored text instead of rendering it", key=f"{key}-raw-chunks"
+    )
     for chunk in chunks:
         path = " > ".join(chunk.get("section_path") or []) or "no section path"
         with st.expander(f"{chunk.get('score', 0):.3f}  {path}"):
             st.caption(chunk.get("source_url", ""))
-            st.text(chunk.get("text", ""))
+            if chunk.get("page_no") is not None:
+                st.caption(f"page {chunk['page_no']}")
+            _render_chunk_text(str(chunk.get("text", "")), raw)
             st.code(chunk.get("chunk_id", ""), language="text")
 
 
@@ -400,14 +564,15 @@ def search_panel(api: Api) -> None:
         submitted = st.form_submit_button("Search")
     filters = _filters(source_id, str(doc_type))
     _warn_about_filters(filters)
-    if not submitted or not query.strip():
-        return
     payload: dict[str, Any] = {"query": query.strip(), "top_k": int(top_k)}
     if filters:
         payload["filters"] = filters
-    body = _run(lambda: api.post("/search", payload, QUERY_TIMEOUT), "Searching")
-    if body is not None:
-        _render_search(body, filters)
+    if submitted and query.strip():
+        body = _run(lambda: api.post("/search", payload, QUERY_TIMEOUT), "Searching")
+        st.session_state[SEARCH_KEY] = body
+    kept = st.session_state.get(SEARCH_KEY)
+    if kept is not None:
+        _render_search(kept, filters)
 
 
 def _warn_about_filters(filters: dict[str, Any]) -> None:
@@ -433,7 +598,22 @@ def _render_search(body: dict[str, Any], filters: dict[str, Any]) -> None:
         "k_used is chosen per query by the score floor and the elbow rule, which "
         "is why it is often lower than top_k."
     )
-    _render_retrieved(body.get("chunks") or [])
+    _render_steps(body.get("steps") or [])
+    _render_retrieved(body.get("chunks") or [], "search")
+
+
+def _render_steps(steps: list[dict[str, Any]]) -> None:
+    """The retrieval funnel, stage by stage. `candidates` is how many chunks left
+    each stage, which is what shows where a missing chunk was dropped: fused into
+    a pool of 60, reranked, then cut to 4 by the score floor."""
+    if not steps:
+        return
+    st.markdown("**Retrieval steps**")
+    for step in steps:
+        st.markdown(
+            f"- **{step.get('stage', '')}**  {step.get('candidates', 0)} candidates  "
+            f"{step.get('latency_ms', 0)} ms  ·  {step.get('note', '')}"
+        )
 
 
 def agent_panel(api: Api) -> None:
@@ -448,14 +628,15 @@ def agent_panel(api: Api) -> None:
     with st.form("agent"):
         question = st.text_area("Question", height=90, key="agent-question")
         submitted = st.form_submit_button("Send")
-    if not submitted or not question.strip():
-        return
-    body = _run(
-        lambda: api.post("/agent", {"question": question.strip()}, QUERY_TIMEOUT),
-        "Routing, calling tools, answering",
-    )
-    if body is not None:
-        render_agent(body)
+    if submitted and question.strip():
+        body = _run(
+            lambda: api.post("/agent", {"question": question.strip()}, QUERY_TIMEOUT),
+            "Routing, calling tools, answering",
+        )
+        st.session_state[AGENT_KEY] = body
+    kept = st.session_state.get(AGENT_KEY)
+    if kept is not None:
+        render_agent(kept)
 
 
 def render_agent(body: dict[str, Any]) -> None:
@@ -469,7 +650,7 @@ def render_agent(body: dict[str, Any]) -> None:
     _render_models_and_prompts(steps)
     for index, step in enumerate(steps):
         _render_step(index, step)
-    _render_retrieved(body.get("chunks") or [])
+    _render_retrieved(body.get("chunks") or [], "agent")
 
 
 def _render_agent_metrics(body: dict[str, Any], steps: list[dict[str, Any]]) -> None:

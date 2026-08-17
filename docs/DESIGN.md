@@ -143,9 +143,25 @@ clients. With one, it is overhead chosen deliberately.
 
 What keeps ingestion from becoming a multi week job: the domain policy cache so
 browser rendering is paid only where needed, page range parallelism so a 1000
-page PDF is 20 independent tasks, model gating so TableFormer does not run on
-prose, async with a global semaphore plus per domain token buckets, and a shared
-browser pool rather than a browser per URL.
+page PDF is 20 tasks running four at a time rather than one long lock, layout
+model gating so a GNN and an OCR pass do not run on pages that already have a
+text layer, every synchronous parse and chunk in a worker thread so a long
+document does not stall the event loop, async with a global semaphore plus per
+domain token buckets, and a shared browser pool rather than a browser per URL.
+
+Measured on a 60 page report before and after those three changes: 6,009 ms per
+page down to 868 ms, a 6.9x difference, which is a 500 page document taking
+seven minutes of extraction rather than fifty.
+
+That moves the bottleneck to embedding. BGE-M3 is an XLM-R large, and on this
+CPU it measures roughly 6 seconds per 512 token chunk: a 40 page document is 80
+chunks and nine minutes, so a 500 page one is hours. That is a hardware
+statement, not a code one, and the honest options are a GPU, a smaller model, or
+an ONNX or quantized build. What the job endpoint changes is that those hours are
+now visible and attributable rather than a request that never returns. Measured
+at `embed_max_length` 1024, the current setting; at 512 the same chunk costs 6.0
+seconds instead of 8.6, but 512 would truncate the embedding of a table chunk,
+which is allowed up to `max_table_tokens` of 2048.
 
 **What breaks first at 1M documents.** Not Qdrant. The browser pool, then cost.
 Tier 2 and 3 fetches at 2 to 10 seconds each do not scale linearly on one
@@ -340,10 +356,29 @@ Every shortcut, stated plainly.
   ingest run cannot hold it at once. `docker compose up -d qdrant` plus
   `path: null` switches to the server. This constraint is why the write path is
   an API endpoint rather than a separate service: see the next four entries.
-- Ingestion through `POST /ingest/url` is synchronous. A long PDF holds the
-  request open for the whole embed, and the stage trace arrives all at once when
-  the call returns rather than streaming as each stage completes. The fix is a
-  job id plus a poll, or SSE, neither of which is built.
+- Job state is in memory and per process, bounded at 50 jobs. A restart loses
+  the record of what ran, and a second API process would not see the first one's
+  jobs. Neither matters while Qdrant in process makes this the only writer there
+  can be, and the corpus is durable either way, but a multi process deployment
+  would need the job table in Postgres.
+- A background ingest cannot be cancelled. Nothing kills a fetch or an embed in
+  flight, so a job started by mistake runs to completion.
+- Progress polls are served from the same process that is doing the work. The
+  heavy stages run in worker threads, so a poll is answered rather than blocked,
+  but they hold the GIL in bursts: during PDF parsing a poll was measured taking
+  up to 8 seconds instead of milliseconds. A process pool, or moving ingestion
+  out of the API process entirely, is the real fix, and both are blocked by
+  Qdrant in process being single writer.
+- Embedding is the dominant cost of an ingest and runs on the CPU. See the scale
+  section for the measurement. No GPU path is wired.
+- `page_class` no longer selects a parser. COMPLEX_TEXT and SIMPLE_TEXT both
+  route to `pymupdf4llm`, which already emits Markdown tables, and Docling
+  measured roughly ten times the cost per page for output the chunker treats
+  identically. Gate 2's table detection still runs, at roughly 240 ms per page,
+  for a distinction that now only appears in the trace.
+- `ChunkRepository.save_many` is one INSERT per chunk. Measured at a few percent
+  of ingest time on a long document, so not the bottleneck, but it should be a
+  multi row INSERT.
 - The ingest endpoints write chunks under `index.tenant_id` from config, not
   under the tenant the API key maps to. One key and one tenant makes those the
   same value today, so nothing is currently wrong, but a second tenant could
@@ -356,11 +391,16 @@ Every shortcut, stated plainly.
   the collection. Re-ingesting the same document overwrites its points, because
   chunk ids are deterministic, so search results never duplicate, but genuinely
   removing a document is not supported.
-- `ui/` is a demo surface, not a product. No streaming, no auth beyond the key
-  in the sidebar, and one shared Streamlit session state, so two people opening
-  it at once share nothing but also confuse each other's reruns.
-- Docling is wired for office formats but the PDF complex range falls back to
-  PyMuPDF4LLM. The gate that would select Docling is implemented and tested.
+- `ui/` is a demo surface, not a product. No auth beyond the key in the sidebar,
+  and one shared Streamlit session state, so two people opening it at once share
+  nothing but also confuse each other's reruns. Progress is polled once a second
+  rather than pushed: the script blocks in a loop redrawing the stage list, which
+  is the only shape Streamlit allows, since a background thread has no session to
+  draw into. Results are held in session state so a widget click does not erase
+  them, which is also what makes the raw text toggle on a chunk usable.
+- Docling is wired for office formats but no PDF page class selects it any more.
+  Measured at roughly ten times the cost per page of PyMuPDF4LLM for output the
+  chunker treats identically. The gate is still computed and still reported.
 - The gold set is 51 items, not the 115 the eval SPEC targets, and it has not
   been hand verified. The SPEC calls that step not optional.
 - `recall@10` in `results.jsonl` is bounded by adaptive k, which cuts to 3, so

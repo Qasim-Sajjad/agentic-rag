@@ -7,6 +7,7 @@ extractor. Both are expensive mistakes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import pairwise
@@ -24,6 +25,9 @@ from rag.extract.types import (
     content_hash,
     doc_id_for,
 )
+from rag.log import get_logger
+
+log = get_logger(__name__)
 
 PRINTABLE_FLOOR = 32
 REPLACEMENT = "�"
@@ -83,13 +87,21 @@ def classify_page(probe: PageProbe, settings: ExtractSettings) -> PageClass:
     return PageClass.SIMPLE_TEXT
 
 
-def probe_pages(content: bytes) -> list[PageProbe]:
+def probe_pages(
+    content: bytes, on_page: Callable[[int, int], None] | None = None
+) -> list[PageProbe]:
+    """`on_page(done, total)` is called per page, because table detection costs
+    roughly 240 ms a page and a 500 page document otherwise spends two silent
+    minutes here before anything downstream has a step to report."""
     import pymupdf
 
     probes: list[PageProbe] = []
     with pymupdf.open(stream=content, filetype="pdf") as doc:
+        total = doc.page_count
         for number, page in enumerate(doc):
             probes.append(_probe_one(page, number))
+            if on_page is not None:
+                on_page(number + 1, total)
     return probes
 
 
@@ -149,6 +161,31 @@ def _extends(
     if last.page_class is not page_class:
         return False
     return (last.end - last.start) < settings.pages_per_task
+
+
+#: Memo for `configure_layout`. A dict rather than a module scalar so the
+#: function needs no `global` statement to record what it already applied.
+_layout_state: dict[str, bool] = {}
+
+
+def configure_layout(use_layout: bool) -> None:
+    """Select pymupdf4llm's extraction path. Called once, before first parse.
+
+    `use_layout(False)` is public API on pymupdf4llm and drops it from the GNN
+    layout plus OCR path to the cheaper one. This is the single biggest cost in
+    the whole ingest for a text layer PDF, so the choice is config rather than a
+    library default: see `ExtractSettings.pymupdf_use_layout` for the numbers.
+
+    Idempotent by module flag. The switch mutates pymupdf4llm globals, so
+    calling it per page range would be both wasteful and a race.
+    """
+    if _layout_state.get("use_layout") == use_layout:
+        return
+    import pymupdf4llm
+
+    pymupdf4llm.use_layout(use_layout)
+    _layout_state["use_layout"] = use_layout
+    log.info("pymupdf4llm layout path", use_layout=use_layout)
 
 
 class PyMuPDF4LLMParser:

@@ -33,6 +33,23 @@ class RetrievedChunk(BaseModel):
     doc_id: str = ""
 
 
+class RetrievalStep(BaseModel):
+    """One retrieval stage, measured as it ran.
+
+    `candidates` is how many chunks left the stage, which is the number that
+    makes the funnel readable: a pool of 100 fused to 60, reranked to 60, cut to
+    4. A total latency alone cannot say which stage cost it or where recall was
+    lost.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    stage: str
+    candidates: int
+    latency_ms: int
+    note: str = ""
+
+
 class SearchResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -40,6 +57,7 @@ class SearchResult(BaseModel):
     confidence: Confidence
     k_used: int
     reason: str | None = None  # set when confidence is not high
+    steps: list[RetrievalStep] = Field(default_factory=list)
     latency_ms: int = 0
 
 

@@ -40,6 +40,8 @@ from rag.fetch.types import FetchResult, FetchTier, Source, SourceStatus
 from rag.index.pipeline import IngestPipeline, IngestResult, StageTiming
 from rag.index.types import Chunk
 from rag.log import get_logger
+from rag.progress import Progress
+from rag.progress import silent as _silent
 
 log = get_logger(__name__)
 
@@ -85,13 +87,19 @@ class UploadedFile:
 
 @dataclass
 class _Trace:
-    """Carries the stage list and the wall clock together, so the helpers below
-    stay inside the five argument limit."""
+    """Carries the stage list, the wall clock and the progress sink together, so
+    the helpers below stay inside the five argument limit.
+
+    `report` rides here rather than being threaded through every helper for the
+    same reason: it is ambient context for the whole ingest, not an argument any
+    one stage chose to take.
+    """
 
     began: float
     source_id: str = ""
     source_url: str = ""
     stages: list[PipelineStage] = field(default_factory=list)
+    report: Progress = _silent
 
     def add(self, stage: PipelineStage) -> None:
         self.stages.append(stage)
@@ -113,14 +121,24 @@ class _StageStoppedError(Exception):
 
 
 async def ingest_url(
-    request: IngestUrlRequest, deps: IngestDependencies
+    request: IngestUrlRequest,
+    deps: IngestDependencies,
+    progress: Progress | None = None,
 ) -> IngestTraceResponse:
-    trace = _Trace(time.perf_counter(), source_url=request.url)
+    trace = _Trace(
+        time.perf_counter(),
+        source_url=request.url,
+        report=progress if progress is not None else _silent,
+    )
     try:
         source = await _source_for_url(request, deps)
         trace.source_id = source.source_id
+        trace.report("fetch", 0, 1, f"tier ladder starting, source {source.source_id}")
         result = await _fetch(request.url, deps, trace)
         trace.source_url = result.final_url
+        trace.report(
+            "fetch", 1, 1, f"tier {int(result.tier_used)}, {len(result.content)} bytes"
+        )
         doc = await _extract(
             result.content, result.final_url, result.content_type, deps, trace
         )
@@ -130,15 +148,22 @@ async def ingest_url(
 
 
 async def ingest_upload(
-    upload: UploadedFile, deps: IngestDependencies
+    upload: UploadedFile,
+    deps: IngestDependencies,
+    progress: Progress | None = None,
 ) -> IngestTraceResponse:
     """The same path as a crawled page, minus the fetch. Extraction takes bytes
     and a URL and cannot tell which one produced them."""
-    trace = _Trace(time.perf_counter(), source_id=UPLOAD_SOURCE)
+    trace = _Trace(
+        time.perf_counter(),
+        source_id=UPLOAD_SOURCE,
+        report=progress if progress is not None else _silent,
+    )
     try:
         await _ensure_upload_source(deps)
         trace.source_url = upload_url(upload.filename, upload.content)
         trace.add(_upload_stage(upload, trace.source_url))
+        trace.report("upload", 1, 1, f"{upload.filename}, {len(upload.content)} bytes")
         doc = await _extract(
             upload.content, trace.source_url, upload.content_type, deps, trace
         )
@@ -318,7 +343,7 @@ async def _extract(
     began = time.perf_counter()
     mime = resolve_mime(content_type, content)
     try:
-        doc = await deps.extract.extract(content, url, content_type)
+        doc = await deps.extract.extract(content, url, content_type, trace.report)
     except (UnsupportedTypeError, EmptyExtractionError, ParserUnavailableError) as exc:
         latency = round((time.perf_counter() - began) * 1000)
         trace.add(
@@ -382,7 +407,7 @@ async def _index(
     deps: IngestDependencies,
     trace: _Trace,
 ) -> IngestTraceResponse:
-    result = await deps.pipeline.ingest(doc, source_id, tier)
+    result = await deps.pipeline.ingest(doc, source_id, tier, trace.report)
     for timing in result.stages:
         trace.add(_pipeline_stage(timing, result, deps.settings))
     log.info(

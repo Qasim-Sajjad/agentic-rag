@@ -16,6 +16,7 @@ from rag.agent.graph import AgentRunner
 from rag.agent.llm import LLMClient, build_client
 from rag.agent.nodes import NodeDependencies
 from rag.api.ingest import IngestDependencies
+from rag.api.jobs import JobStore
 from rag.clock import SystemClock
 from rag.config.settings import Settings, get_settings
 from rag.db.pool import Database
@@ -92,6 +93,9 @@ class AppContext:
     # Held so the lifespan can close them. Browsers launch lazily, so an API
     # process that only answers questions never starts one.
     fetchers: dict[FetchTier, Fetcher]
+    # In flight and recently finished background ingests. Per process, which is
+    # correct while Qdrant in process makes this the only writer anyway.
+    jobs: JobStore
 
 
 def build_context(settings: Settings | None = None) -> AppContext:
@@ -145,6 +149,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
         response_cache=TTLCache(resolved.api.cache_ttl_seconds),
         ingest=build_ingest(db, store, embedder, fetchers, resolved),
         fetchers=fetchers,
+        jobs=JobStore(),
     )
 
 

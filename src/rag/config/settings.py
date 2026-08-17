@@ -129,6 +129,15 @@ class ExtractSettings(_Section):
     min_chars_per_page: int = 100
     max_garbage_ratio: float = 0.2
     pages_per_task: int = 50
+    # pymupdf4llm takes a GNN layout plus OCR path on every page when
+    # `pymupdf-layout` is installed. Measured on a 9 page PDF: 2583 ms/page with
+    # it against 227 ms/page without, for 0.7% less extracted text. Scanned
+    # ranges go to the VLM, never to pymupdf4llm, so the expensive path buys
+    # nothing here. On means 21 minutes for a 500 page PDF, off means 2.
+    pymupdf_use_layout: bool = False
+    # Page ranges are independent, so they extract concurrently. Capped because
+    # each one is a CPU bound thread and oversubscribing thrashes.
+    max_parallel_ranges: int = 4
     ocr: OcrSettings = OcrSettings()
 
 

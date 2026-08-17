@@ -6,6 +6,7 @@ inference pass and one index rather than two systems that drift apart.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -110,18 +111,17 @@ class BGEM3Embedder:
         )
 
     async def embed(self, texts: list[str]) -> list[Embedding]:
-        model = self._load()
-        output = model.encode(
-            texts,
-            batch_size=self._settings.embed_batch_size,
-            # BGE-M3 defaults to its full 8192 token window. Chunks target
-            # `target_tokens`, so encoding at 8192 pays for padding that is
-            # never used and costs roughly an order of magnitude on CPU.
-            max_length=self._settings.embed_max_length,
-            return_dense=True,
-            return_sparse=True,
-            return_colbert_vecs=False,
-        )
+        """Threaded, because this is synchronous CPU work of seconds per batch.
+        On the event loop it blocks the whole API process, so a job reporting its
+        progress cannot answer the request that polls for it: the work happens,
+        and the caller watching it sees a frozen server.
+
+        `_load` is inside the thread, not before it. Loading BGE-M3 is a two
+        gigabyte read and the slowest single call in an ingest: awaiting it on
+        the loop froze every poll for the length of the load, which is the exact
+        symptom the job endpoint exists to remove.
+        """
+        output = await asyncio.to_thread(self._encode, texts)
         return [
             Embedding(
                 dense=[float(value) for value in output["dense_vecs"][i]],
@@ -132,6 +132,19 @@ class BGEM3Embedder:
             )
             for i in range(len(texts))
         ]
+
+    def _encode(self, texts: list[str]) -> Any:
+        return self._load().encode(
+            texts,
+            batch_size=self._settings.embed_batch_size,
+            # BGE-M3 defaults to its full 8192 token window. Chunks target
+            # `target_tokens`, so encoding at 8192 pays for padding that is
+            # never used and costs roughly an order of magnitude on CPU.
+            max_length=self._settings.embed_max_length,
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=False,
+        )
 
 
 class SentenceTransformerEmbedder:
@@ -168,14 +181,18 @@ class SentenceTransformerEmbedder:
         return self._model
 
     async def embed(self, texts: list[str]) -> list[Embedding]:
-        prefixed = [f"{self._doc_prefix}{text}" for text in texts]
-        vectors = self._load().encode(prefixed, normalize_embeddings=True)
-        return [Embedding([float(value) for value in vector], {}) for vector in vectors]
+        return await self._encode([f"{self._doc_prefix}{text}" for text in texts])
 
     async def embed_queries(self, texts: list[str]) -> list[Embedding]:
-        prefixed = [f"{self._query_prefix}{text}" for text in texts]
-        vectors = self._load().encode(prefixed, normalize_embeddings=True)
+        return await self._encode([f"{self._query_prefix}{text}" for text in texts])
+
+    async def _encode(self, prefixed: list[str]) -> list[Embedding]:
+        """Threaded including the load, for the reason on `BGEM3Embedder.embed`."""
+        vectors = await asyncio.to_thread(self._run, prefixed)
         return [Embedding([float(value) for value in vector], {}) for vector in vectors]
+
+    def _run(self, prefixed: list[str]) -> Any:
+        return self._load().encode(prefixed, normalize_embeddings=True)
 
 
 def build_embedder(settings: IndexSettings) -> Embedder:

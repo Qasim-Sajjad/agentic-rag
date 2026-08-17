@@ -19,7 +19,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Request, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 
 from rag.api.ask import AskDependencies, ask
@@ -31,6 +39,7 @@ from rag.api.deps import (
     tenant_from_key,
 )
 from rag.api.ingest import UploadedFile, ingest_upload, ingest_url
+from rag.api.jobs import IngestJob, launch, status_of
 from rag.api.models import (
     AgentRequest,
     AgentResponse,
@@ -38,6 +47,9 @@ from rag.api.models import (
     AskResponse,
     ErrorBody,
     ErrorResponse,
+    IngestJobAccepted,
+    IngestJobList,
+    IngestJobStatus,
     IngestStatusResponse,
     IngestSummary,
     IngestTraceResponse,
@@ -55,6 +67,9 @@ from rag.retrieve.types import SearchFilters
 log = get_logger(__name__)
 
 Tenant = Annotated[str, Depends(tenant_from_key)]
+# Both ingest endpoints answer either way: the whole trace when the caller
+# waited, an id to poll when it asked not to.
+IngestUrlResult = IngestTraceResponse | IngestJobAccepted
 # Annotated rather than a `File(...)` default, which would be a function call in
 # a default argument.
 Upload = Annotated[UploadFile, File()]
@@ -79,6 +94,7 @@ def create_app(context: AppContext | None = None) -> FastAPI:
         app.state.context = context
     _register_query(app)
     _register_ingest(app)
+    _register_jobs(app)
     _register_errors(app)
     return app
 
@@ -101,6 +117,7 @@ def _register_query(app: FastAPI) -> None:
             chunks=result.chunks,
             confidence=result.confidence,
             k_used=result.k_used,
+            steps=result.steps,
             latency_ms=result.latency_ms,
         )
 
@@ -141,28 +158,58 @@ def _register_query(app: FastAPI) -> None:
 def _register_ingest(app: FastAPI) -> None:
     """The write path plus the status read, which reports on it."""
 
-    @app.post("/ingest/url", response_model=IngestTraceResponse)
+    @app.post("/ingest/url", response_model=IngestUrlResult)
     async def ingest_from_url(
-        request: IngestUrlRequest, http: Request, tenant: Tenant
-    ) -> IngestTraceResponse:
+        request: IngestUrlRequest,
+        http: Request,
+        tenant: Tenant,
+        response: Response,
+        background: bool = False,
+    ) -> IngestUrlResult:
         """Fetch, extract, chunk, embed and store one URL, reporting each stage.
 
         Lives here rather than in a separate process because Qdrant in process
         is single writer: the collection is held by whoever opened it.
-        """
-        return await ingest_url(request, context_of(http).ingest)
 
-    @app.post("/ingest/file", response_model=IngestTraceResponse)
+        `background=true` returns 202 and a job id instead of holding the
+        connection open. A large document is minutes of work, which is a client
+        timeout rather than a response.
+        """
+        ctx = context_of(http)
+        if not background:
+            return await ingest_url(request, ctx.ingest)
+        job = launch(
+            ctx.jobs,
+            "url",
+            request.url,
+            lambda report: ingest_url(request, ctx.ingest, report),
+        )
+        return _accepted(job, response)
+
+    @app.post("/ingest/file", response_model=IngestUrlResult)
     async def ingest_from_file(
-        http: Request, tenant: Tenant, file: Upload
-    ) -> IngestTraceResponse:
+        http: Request,
+        tenant: Tenant,
+        file: Upload,
+        response: Response,
+        background: bool = False,
+    ) -> IngestUrlResult:
         """The same path minus the fetch. A PDF, DOCX, XLSX, CSV or text file."""
+        ctx = context_of(http)
         upload = UploadedFile(
             filename=file.filename or "upload",
             content=await file.read(),
             content_type=file.content_type or "",
         )
-        return await ingest_upload(upload, context_of(http).ingest)
+        if not background:
+            return await ingest_upload(upload, ctx.ingest)
+        job = launch(
+            ctx.jobs,
+            "file",
+            upload.filename,
+            lambda report: ingest_upload(upload, ctx.ingest, report),
+        )
+        return _accepted(job, response)
 
     @app.get("/ingest/status", response_model=IngestStatusResponse)
     async def ingest_status(
@@ -181,6 +228,37 @@ def _register_ingest(app: FastAPI) -> None:
         # Reporting total_sources as the number of rows returned makes a
         # filtered request look like a one source corpus.
         return IngestStatusResponse(sources=rows, summary=_summarise(everything))
+
+
+def _register_jobs(app: FastAPI) -> None:
+    """Polling for a background ingest. Read only: these never start work."""
+
+    @app.get("/ingest/jobs", response_model=IngestJobList)
+    async def list_jobs(
+        http: Request, tenant: Tenant, limit: int = 20
+    ) -> IngestJobList:
+        jobs = context_of(http).jobs.recent(limit)
+        return IngestJobList(jobs=[status_of(job) for job in jobs])
+
+    @app.get("/ingest/jobs/{job_id}", response_model=IngestJobStatus)
+    async def job_status(job_id: str, http: Request, tenant: Tenant) -> IngestJobStatus:
+        """404 covers both never existed and evicted. The store is bounded, so a
+        client that stops polling and comes back much later gets the same answer
+        either way."""
+        job = context_of(http).jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id}")
+        return status_of(job)
+
+
+def _accepted(job: IngestJob, response: Response) -> IngestJobAccepted:
+    """202, not 200. The work was accepted, it has not happened yet."""
+    response.status_code = 202
+    return IngestJobAccepted(
+        job_id=job.job_id,
+        status=job.status,
+        poll=f"/ingest/jobs/{job.job_id}",
+    )
 
 
 def _ask_cache_key(ctx: AppContext, request: AskRequest, tenant: str) -> str:

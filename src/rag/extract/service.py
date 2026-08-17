@@ -7,6 +7,8 @@ a crawled page downstream.
 
 from __future__ import annotations
 
+import asyncio
+
 from rag.config.settings import ExtractSettings, Settings, get_settings
 from rag.extract import router
 from rag.extract.ocr import VLMOCRParser
@@ -15,6 +17,7 @@ from rag.extract.pdf import (
     PageClass,
     PageRange,
     PyMuPDF4LLMParser,
+    configure_layout,
     merge_split_tables,
     plan_ranges,
     probe_pages,
@@ -27,6 +30,8 @@ from rag.extract.protocols import (
 )
 from rag.extract.types import Block, CanonicalDoc, DocType, content_hash, doc_id_for
 from rag.log import get_logger
+from rag.progress import Progress
+from rag.progress import silent as _silent
 
 log = get_logger(__name__)
 
@@ -48,10 +53,33 @@ class PdfRouter:
         self._ocr = ocr
 
     async def parse(self, content: bytes, source_url: str) -> CanonicalDoc:
-        ranges = plan_ranges(probe_pages(content), self._settings)
-        blocks: list[Block] = []
-        for page_range in ranges:
-            blocks.extend(await self._parse_range(content, page_range, source_url))
+        """The `DocumentParser` protocol shape. Reports nothing."""
+        return await self.parse_progress(content, source_url, _silent)
+
+    async def parse_progress(
+        self, content: bytes, source_url: str, progress: Progress
+    ) -> CanonicalDoc:
+        """Same work, reporting each stage as it completes.
+
+        A separate method rather than an optional argument on `parse`, so the
+        protocol every other parser implements stays two arguments. `ExtractService`
+        looks for this method the way retrieval looks for `embed_queries`.
+        """
+        configure_layout(self._settings.pymupdf_use_layout)
+        report = progress
+
+        def probed(done: int, total: int) -> None:
+            """Called from the worker thread. Reporting is a dict assignment on
+            the other side, and the reader is a separate request, so there is
+            nothing here for a lock to protect."""
+            report("probe", done, total, "reading the text layer, detecting tables")
+
+        # Probing opens every page and runs table detection, which is seconds of
+        # CPU on a long document. Off the event loop or the whole API stalls.
+        probes = await asyncio.to_thread(probe_pages, content, probed)
+        ranges = plan_ranges(probes, self._settings)
+        report("probe", len(probes), len(probes), f"{len(ranges)} ranges planned")
+        blocks = await self._parse_ranges(content, ranges, source_url, report)
         if not blocks:
             raise EmptyExtractionError(f"no usable pages in {source_url}")
         merged = merge_split_tables(blocks)
@@ -65,6 +93,45 @@ class PdfRouter:
             doc_type=DocType.PDF,
         )
 
+    async def _parse_ranges(
+        self,
+        content: bytes,
+        ranges: list[PageRange],
+        source_url: str,
+        report: Progress,
+    ) -> list[Block]:
+        """Ranges are independent by construction, so they run concurrently.
+
+        `plan_ranges` has always split a long document into tasks; until now the
+        caller awaited them one at a time, which made the split bookkeeping
+        rather than parallelism. `gather` preserves input order, so the blocks
+        still come back in page order and `merge_split_tables` still sees a
+        table's two halves adjacent.
+        """
+        limit = asyncio.Semaphore(max(1, self._settings.max_parallel_ranges))
+        done = 0
+        parallel = max(1, self._settings.max_parallel_ranges)
+        # Announced before the first range finishes, so the stage exists in the
+        # progress list while it is still working rather than appearing at the
+        # end. A stage that is absent reads as a stage that has not started.
+        report("extract", 0, len(ranges), f"{parallel} ranges at a time")
+
+        async def one(page_range: PageRange) -> list[Block]:
+            nonlocal done
+            async with limit:
+                blocks = await self._parse_range(content, page_range, source_url)
+            done += 1
+            report(
+                "extract",
+                done,
+                len(ranges),
+                f"pages {page_range.start}-{page_range.end}, {len(blocks)} blocks",
+            )
+            return blocks
+
+        results = await asyncio.gather(*(one(entry) for entry in ranges))
+        return [block for group in results for block in group]
+
     async def _parse_range(
         self, content: bytes, page_range: PageRange, source_url: str
     ) -> list[Block]:
@@ -72,7 +139,11 @@ class PdfRouter:
         with a scanned appendix is still worth the 880 pages we can read."""
         if page_range.page_class is PageClass.SCANNED:
             return await self._ocr_range(content, page_range, source_url)
-        return self._simple.parse_pages(content, page_range.pages)
+        # Synchronous PyMuPDF work. Threaded so a 500 page extract does not hold
+        # the event loop and time out every other request on the server.
+        return await asyncio.to_thread(
+            self._simple.parse_pages, content, page_range.pages
+        )
 
     async def _ocr_range(
         self, content: bytes, page_range: PageRange, source_url: str
@@ -143,12 +214,16 @@ class ExtractService:
         return mime, parser
 
     async def extract(
-        self, content: bytes, source_url: str, content_type: str
+        self,
+        content: bytes,
+        source_url: str,
+        content_type: str,
+        progress: Progress | None = None,
     ) -> CanonicalDoc:
         """Raises `UnsupportedTypeError` or `EmptyExtractionError`, both of
         which the caller writes to the dead letter store with `stage=extract`."""
         mime, parser = self.parser_for(content_type, content)
-        doc = await parser.parse(content, source_url)
+        doc = await self._run(parser, content, source_url, progress)
         log.info(
             "extracted",
             url=source_url,
@@ -157,6 +232,21 @@ class ExtractService:
             blocks=len(doc.blocks),
         )
         return doc
+
+    async def _run(
+        self,
+        parser: DocumentParser,
+        content: bytes,
+        source_url: str,
+        progress: Progress | None,
+    ) -> CanonicalDoc:
+        """Only the PDF router reports stages, because only it has stages worth
+        reporting. Everything else is one pass over one document."""
+        detailed = getattr(parser, "parse_progress", None)
+        if progress is not None and detailed is not None:
+            result: CanonicalDoc = await detailed(content, source_url, progress)
+            return result
+        return await parser.parse(content, source_url)
 
 
 __all__ = [

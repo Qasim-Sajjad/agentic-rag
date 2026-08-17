@@ -110,6 +110,33 @@ async def test_search_records_latency(search: SearchService):
     assert result.latency_ms >= 0
 
 
+async def test_search_reports_every_stage_it_ran(search: SearchService):
+    """The funnel, not just a total. A single latency cannot say which stage
+    cost the time or where a chunk was dropped."""
+    result = await search.search("segment revenue")
+    stages = [step.stage for step in result.steps]
+    assert stages == [
+        "embed query",
+        "vector search",
+        "fuse",
+        "rerank",
+        "adaptive cut",
+    ]
+
+
+async def test_the_stage_timings_sum_to_the_total(search: SearchService):
+    """Each step measures the gap since the last one, so they add up rather than
+    each repeating the elapsed time. Rounding allows one ms per step."""
+    result = await search.search("segment revenue")
+    total = sum(step.latency_ms for step in result.steps)
+    assert total <= result.latency_ms + len(result.steps)
+
+
+async def test_the_last_stage_reports_the_chunks_returned(search: SearchService):
+    result = await search.search("share buyback")
+    assert result.steps[-1].candidates == len(result.chunks)
+
+
 async def test_results_carry_their_source_url(search: SearchService):
     result = await search.search("share buyback")
     prefix = "https://example.test/"
