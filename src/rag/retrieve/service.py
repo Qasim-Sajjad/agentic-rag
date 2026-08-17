@@ -36,6 +36,8 @@ class SearchService:
         self._deps = deps
         self._settings = deps.settings
 
+    # get the ranked chunks of the query, with optional filters and top_k limit. 
+    # The returned chunks are already reranked.
     async def search(
         self,
         query: str,

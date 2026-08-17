@@ -89,6 +89,7 @@ class QdrantStore:
                 field_schema=schema,
             )
 
+    # Store vectors in qdrant client.
     async def upsert(self, chunks: list[Chunk], vectors: list[Embedding]) -> int:
         from qdrant_client import models
 
