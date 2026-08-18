@@ -275,6 +275,81 @@ neither is wired. `find_tables()` still runs during the probe for a page class
 that no longer selects a parser, job state is in memory and per process, and a
 job cannot be cancelled. All recorded as gaps.
 
+### 2026-08-18, session 9, embedding swap and range planning
+Tool: Claude Code (Opus 5)
+Asked for: A 252 page prospectus was still taking an hour. Make it usable, and
+match what a hosted assistant does with an uploaded document in two minutes.
+Kept: The measurement first, again. bge-small-en-v1.5 at 184 ms per chunk
+against BGE-M3 at 8,600 ms, both on this CPU, both timed before any code moved.
+Corrected: my own assumption that extraction was still the problem. Threads and
+processes were both benchmarked on a real 11 MB PDF and neither helped: parsing
+was already 76 ms per page, and 8 processes made it four times slower. The two
+real costs were the embedding model and, on the user's document, range planning
+splitting 252 pages into 64 ranges because a page with a table was treated as a
+different class from a page without, for a distinction that no longer selects a
+parser. That document plans 6 ranges now.
+Rewrote: the sparse side of hybrid retrieval. A small dense model has no sparse
+head, and dropping the lexical half would lose exactly the queries it exists
+for: a course code, a part number, a surname. `rag.index.lexical` is a hashed
+bag of words with sublinear term frequency, the scoring half of BM25, at
+microseconds per chunk. `blake2b` rather than the builtin `hash`, which is
+salted per process and would give a document one id at index time and another at
+query time.
+Mine, not the tool's: that the model choice stays config with BGE-M3 intact
+rather than being deleted, and that what the swap gives up is written into
+DESIGN section 3 rather than quietly dropped. Also that the query instruction
+prefix must not reach the sparse side, since those words would match every
+document, which is a test rather than a comment.
+Found in passing: changing the embedding model strands the corpus. Postgres
+still holds the documents, so re-ingesting the same files is correctly rejected
+as duplicate and their vectors never reach the new collection: present, indexed
+and invisible. The backfill the index SPEC had described since the first draft
+did not exist as code. It does now, and it moved 1,461 chunks in 290 seconds.
+Verified: ruff and mypy clean on 79 files, 456 tests, and a 252 page 55 MB PDF
+through the running API in 89 seconds end to end, with every stage visible while
+it ran. Search after the swap finds an exact table row for a lexical query and
+the right passage for a semantic one.
+Not done: no eval run on the frozen gold set comparing the two models. The
+harness and the backfill both exist now, so the comparison is one command per
+model, and the numbers in DESIGN section 3 are throughput, not recall.
+
+### 2026-08-18, session 10, answer rendering and page attribution
+Tool: Claude Code (Opus 5)
+Asked for: The agent answer showed literal asterisks and ran its numbered list
+into one block. Render it properly and make the output less ugly.
+Kept: nothing from the previous renderer. It escaped the answer and wrapped it
+in paragraph tags, which was the bug: the model writes Markdown, and escaping
+Markdown is how `**Regular Undergraduate Admission**` reached the screen with
+its asterisks intact.
+Corrected: the reason the escaping was there in the first place, rather than
+just deleting it. The answer is written from documents this system does not
+control, so markup in a document must not become markup on the page. Streamlit
+renders Markdown with HTML off, which keeps that guarantee, so the only thing
+that had to change was the footnote marker: superscript digits instead of `<sup>`
+tags, and nothing needs an exception to the rule any more.
+Rewrote: the agent panel as three tabs, answer, path and tools, retrieved
+chunks. Reading the answer previously meant scrolling past the graph trace to
+reach the chunks it came from. Also the retrieval steps, now a table rather than
+a bullet list, and citation sources now show the file name rather than a
+synthetic url ending in a content digest.
+Found in passing, and this one matters more than the styling: the UI showed
+`page 0` on every chunk. `parse_pages` stamped every block in a range with the
+range's first page, which was approximately true when a range was a few pages
+and became false when I merged ranges to fifty in the previous session. My own
+change had quietly degraded citation provenance. `page_chunks=True` returns a
+Markdown entry per page with its number attached at the same cost, so pages are
+now real and count from one, which is what the OCR path already recorded and
+what a PDF reader shows.
+Mine, not the tool's: that a chunk preview is returned whole. A chunk cut mid
+table is the defect a reviewer opens the preview to find, so truncating it there
+would manufacture the defect being looked for.
+Verified: ruff, mypy and 458 tests, plus the running UI in a browser: no literal
+asterisks, superscript citations in both the prose and the source list, the
+retrieval funnel as a table, and a CSV chunk rendering as a real table.
+Not done: page numbers are fixed for documents ingested from now on. Anything
+already in the corpus keeps the page it was stamped with, because the number
+lives in the chunk and the re-embed backfill only replaces vectors.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

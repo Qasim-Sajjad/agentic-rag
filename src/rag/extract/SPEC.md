@@ -121,10 +121,23 @@ Split every PDF into ranges of `pages_per_task` (default 50) before parsing.
 Each range is an independent task with its own checkpoint. A 1000 page document
 becomes 20 tasks, not one long worker lock.
 
+A range breaks on a change of parser, not on a change of page class. Both text
+classes run `PyMuPDF4LLMParser`, so only the scanned boundary is real. Splitting
+on the table boundary as well turned a 252 page prospectus that alternates prose
+and tables into 64 ranges: 64 parser instances, each reopening the document, for
+a distinction that selects nothing. The same document now plans 6.
+
 Ranges run concurrently, bounded by `extract.max_parallel_ranges` (default 4).
 Each range is synchronous PyMuPDF work and runs in a worker thread, as does the
 initial probe: a 500 page extract on the event loop stalls every other request
 the API is serving, which reads as a hung server rather than a slow one.
+
+Every block carries the page it came from, counting from one, as a reader sees
+it in a PDF viewer and as the OCR path already recorded it. `pymupdf4llm` is
+called with `page_chunks=True`, which returns a Markdown entry per page with its
+number attached at the same cost as one blob for the whole range. Attributing a
+whole range to its first page was tolerable when a range was a few pages and
+became a lie once ranges merged to fifty.
 
 Reassembly concatenates ranges in page order and runs one fixup pass: a table
 at the top of a range with the same column count as the table ending the
@@ -191,6 +204,11 @@ Unit:
 - Gate 1 classifies a digital born PDF, a scanned PDF, and one with broken font
   encoding
 - Reassembly merges a table split across a page range boundary
+- A table page does not start a new range, a scanned page does, and a merged
+  text run still respects `pages_per_task`
+- Every page's blocks carry that page's number, counting from one
+- The probe reports each page as it reads it, and extraction announces itself
+  before the first range finishes
 - Unknown MIME returns `UNSUPPORTED_TYPE` and does not raise
 
 Extraction anchors, `evals/anchors/`: 12 pages spanning digital born, scanned,

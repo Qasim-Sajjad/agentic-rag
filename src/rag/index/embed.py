@@ -1,7 +1,15 @@
-"""Embedding behind a protocol. BGE-M3 for real, a hashing fake for tests.
+"""Embedding behind a protocol. Two real embedders and a hashing fake.
 
 BGE-M3 emits dense and sparse from one model, so hybrid retrieval is one
-inference pass and one index rather than two systems that drift apart.
+inference pass and one index rather than two systems that drift apart. It is
+also an XLM-R large, and on a CPU it measures roughly 8.6 seconds per 512 token
+chunk: a 250 page document is 600 chunks and an hour and a half, which is not a
+system anyone can demonstrate.
+
+`SmallHybridEmbedder` is the same shape at a fraction of the cost: a 33M
+parameter dense model, measured at 184 ms per chunk on the same machine, with
+the sparse side computed lexically in `rag.index.lexical`. Which one runs is
+`index.embed_model`, and the tradeoff is written down in docs/DESIGN.md.
 """
 
 from __future__ import annotations
@@ -12,12 +20,16 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from rag.config.settings import IndexSettings
+from rag.index.lexical import lexical_sparse
 from rag.log import get_logger
 
 log = get_logger(__name__)
 
 BGE_M3 = "BAAI/bge-m3"
 DENSE_DIMS = 1024
+
+BGE_SMALL = "BAAI/bge-small-en-v1.5"
+SMALL_DIMS = 384
 
 # Exactly what BGE-M3 loads. The repo also ships onnx/model.onnx_data, a 2.2 GB
 # copy of the same weights in a format we never touch, and FlagEmbedding's
@@ -195,10 +207,82 @@ class SentenceTransformerEmbedder:
         return self._load().encode(prefixed, normalize_embeddings=True)
 
 
+class SmallHybridEmbedder:
+    """A small dense model plus a lexical sparse vector. Hybrid, without the
+    large model.
+
+    BGE-M3's sparse head is better than a bag of words: it weights a term by
+    context rather than by frequency. It also costs 47 times as much per chunk
+    on a CPU, and the difference between an hour and two minutes is the
+    difference between a system that indexes a document and one that does not.
+    See `rag.index.lexical` for what the sparse side gives up.
+
+    `bge-small-en-v1.5` asks for an instruction prefix on queries and none on
+    passages. Getting that asymmetry backwards silently costs recall, which is
+    why it is stated here rather than assumed.
+    """
+
+    QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+    def __init__(self, settings: IndexSettings, model_name: str = BGE_SMALL) -> None:
+        self._settings = settings
+        self.model_name = model_name
+        self.dims = settings.embed_dims
+        self._model: Any = None
+
+    def _load(self) -> Any:
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            log.info("loading embedding model", model=self.model_name)
+            model = SentenceTransformer(self.model_name)
+            model.max_seq_length = self._settings.embed_max_length
+            self._model = model
+        return self._model
+
+    async def embed(self, texts: list[str]) -> list[Embedding]:
+        return await self._encode(texts, texts)
+
+    async def embed_queries(self, texts: list[str]) -> list[Embedding]:
+        """The sparse side takes the bare query, not the prefixed one. The
+        prefix is an instruction to the dense model and its words would
+        otherwise become lexical terms that match every document."""
+        prefixed = [f"{self.QUERY_PREFIX}{text}" for text in texts]
+        return await self._encode(prefixed, texts)
+
+    async def _encode(
+        self, dense_in: list[str], sparse_in: list[str]
+    ) -> list[Embedding]:
+        """Threaded including the load, for the reason on `BGEM3Embedder.embed`."""
+        vectors = await asyncio.to_thread(self._run, dense_in)
+        return [
+            Embedding(
+                dense=[float(value) for value in vector],
+                sparse=lexical_sparse(text),
+            )
+            for vector, text in zip(vectors, sparse_in, strict=True)
+        ]
+
+    def _run(self, texts: list[str]) -> Any:
+        return self._load().encode(
+            texts,
+            batch_size=self._settings.embed_batch_size,
+            normalize_embeddings=True,
+        )
+
+
 def build_embedder(settings: IndexSettings) -> Embedder:
-    """One place that turns config into an embedder. BGE-M3 is the only one
-    that serves production, for the reason in docs/DESIGN.md section 3."""
-    return BGEM3Embedder(settings, settings.embed_model)
+    """One place that turns config into an embedder.
+
+    Both are hybrid and both are swappable, and the choice is a latency for
+    quality trade recorded in docs/DESIGN.md. Changing it changes `embed_dims`,
+    which means a different Qdrant collection: vectors of two widths cannot
+    share one, and mixing two models' vectors in one space would be worse than
+    either model alone.
+    """
+    if settings.embed_model == BGE_M3:
+        return BGEM3Embedder(settings, settings.embed_model)
+    return SmallHybridEmbedder(settings, settings.embed_model)
 
 
 async def embed_in_batches(

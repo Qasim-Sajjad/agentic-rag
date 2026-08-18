@@ -77,10 +77,32 @@ nothing and save a week.
 
 ## Embedding
 
-`BGE-M3`. Chosen because it emits dense and sparse vectors from one model. Every
-alternative means a second system for the sparse side, with its own index and
-its own way to drift out of sync. 8192 token context, so oversized table chunks
-are not silently truncated.
+Two embedders, both hybrid, selected by `index.embed_model`.
+
+`BGE-M3` was the original choice, because it emits dense and sparse vectors from
+one model: every alternative means a second system for the sparse side, with its
+own index and its own way to drift out of sync. 8192 token context, so oversized
+table chunks are not silently truncated.
+
+It is not the default any more, for a measured reason. On the CPU this is built
+on, BGE-M3 costs 8.6 seconds per 512 token chunk. A 252 page document is roughly
+600 chunks and 90 minutes, and an ingest nobody waits for is not a feature.
+
+The default is `bge-small-en-v1.5` at 384 dimensions, measured at 184 ms per
+chunk, 47 times faster. Hybrid survives because the sparse side moves to
+`src/rag/index/lexical.py`: a hashed bag of words with sublinear term frequency,
+which is the scoring half of BM25 without length normalisation. The query side
+and the document side must agree on the id space, so the hash is `blake2b` and
+not the builtin `hash`, which is salted per process.
+
+What the swap gives up, stated rather than buried: BGE-M3 weights a sparse term
+by its context and this weights it by its count; 384 dimensions instead of 1024;
+and a 512 token window, so a table chunk longer than that is truncated for
+embedding, never for storage or display.
+
+`embed_dims` and `qdrant.collection` move together with the model. One
+collection holds one vector width, and two models' vectors in one space retrieve
+worse than either model alone.
 
 Benchmarked against `Qwen3-Embedding-0.6B` in
 `notebooks/02_embedding_compare.ipynb`. Qwen3 needs an `Instruct:` prefix on
@@ -254,11 +276,21 @@ object storage.
 
 Given that, swapping models is:
 
-1. Add `dense_v2` as a second named vector on the existing collection
-2. Backfill by streaming `SELECT chunk_id, embed_text FROM chunk`, writing
-   `embed_model_version` on success. No re-scrape, no re-extract
-3. Dual read and compare on the frozen gold set
-4. Cut over by config flag, drop `dense_v1`
+1. Point `index.embed_model`, `index.embed_dims` and `qdrant.collection` at the
+   new model. A different width needs a different collection
+2. `uv run python -m rag.index.reembed`, which streams `chunk.embed_text` out of
+   Postgres, embeds it with the configured model and writes
+   `embed_model_version` on the chunks it covered. No re-scrape, no re-extract
+3. Compare on the frozen gold set before deleting the old collection
+
+Stop the API server first. Qdrant in process is single writer.
+
+The backfill is not optional after a model change, and the reason is worth
+stating: Postgres still holds the documents, so re-ingesting the same files is
+correctly rejected as duplicates, and their vectors would never reach the new
+collection. The corpus would be present, indexed, and invisible.
+
+Measured: 1,461 chunks re-embedded in 290 seconds with `bge-small-en-v1.5`.
 
 Cost: 500K chunks at ~400 tokens is about 200M tokens, hours of wall clock.
 Re-scraping instead would take weeks and return different content because the
@@ -275,6 +307,11 @@ web moved. That asymmetry is the entire reason intermediate artifacts persist.
 - Re-embed: named vector added without touching existing points
 - The progress sink reports `dedup`, `chunk`, `embed` and `store`, each stage
   once rather than once per batch
+- Config selects the embedder, and both report the width config declared
+- The lexical sparse vector is stable across processes, drops stopwords, is
+  sublinear in term frequency and unit length, and keeps identifiers whole
+- A query and the passage that answers it share sparse ids
+- The query instruction prefix never reaches the sparse side
 
 ## Known gaps
 

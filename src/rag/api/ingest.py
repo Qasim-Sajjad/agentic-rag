@@ -46,9 +46,10 @@ from rag.progress import silent as _silent
 log = get_logger(__name__)
 
 # A preview, not the corpus. Returning every chunk of a 900 page PDF over JSON
-# would be the wrong default and the UI cannot render it anyway.
+# would be the wrong default and the UI cannot render it anyway. Those chunks
+# are returned whole: a chunk cut mid table is exactly the thing a reviewer is
+# checking for, and truncating it would fake the defect being looked for.
 PREVIEW_LIMIT = 12
-PREVIEW_CHARS = 1100
 
 UPLOAD_SOURCE = "upload"
 UPLOAD_DOMAIN = "upload.local"
@@ -494,8 +495,8 @@ def _preview(chunks: tuple[Chunk, ...]) -> list[ChunkPreview]:
             token_count=chunk.token_count,
             is_table=chunk.metadata.is_table,
             page_no=chunk.metadata.page_no,
-            text=chunk.text[:PREVIEW_CHARS],
-            truncated=len(chunk.text) > PREVIEW_CHARS,
+            text=chunk.text,
+            truncated=False,
         )
         for chunk in chunks[:PREVIEW_LIMIT]
     ]

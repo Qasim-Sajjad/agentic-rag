@@ -174,9 +174,12 @@ are accumulated separately in the loop rather than split by guesswork after.
 `dedup`, and the stages after it are absent, because they did not run. Reporting
 them as zeroes would claim work that never happened.
 
-`chunk_preview` is a preview: at most 12 chunks, each truncated to 1100
-characters with `truncated: true` when it was cut. Returning every chunk of a
-900 page PDF over JSON is the wrong default.
+`chunk_preview` is a preview: at most 12 chunks, each returned whole. The cap
+is on how many chunks, not on how much of one, because a chunk cut mid table is
+the defect this preview exists to expose and truncating it here would
+manufacture that defect. Returning every chunk of a 900 page PDF over JSON is
+still the wrong default, which is what the count cap is for. `truncated` stays
+in the shape for a client that cannot render a long chunk.
 
 Domain policy is unchanged and is not negotiable from here:
 

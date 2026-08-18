@@ -115,6 +115,23 @@ async def test_extraction_without_a_progress_sink_still_parses(
     assert "Page 3 of the report" in doc.text
 
 
+async def test_every_page_carries_its_own_page_number(service: ExtractService):
+    """A citation names a page a reader can turn to. Attributing a whole range
+    to its first page was tolerable at a few pages per range and became a lie
+    when ranges merged to fifty."""
+    doc = await service.extract(a_three_page_pdf(), URL, "application/pdf")
+    by_page = {block.provenance.page for block in doc.blocks}
+    assert by_page == {1, 2, 3}
+
+
+async def test_page_numbers_count_from_one(service: ExtractService):
+    """As a PDF reader shows them, and as the OCR path already recorded them.
+    Two conventions in one field is the worse bug."""
+    doc = await service.extract(a_three_page_pdf(), URL, "application/pdf")
+    first = next(b for b in doc.blocks if "Page 1 of the report" in b.text)
+    assert first.provenance.page == 1
+
+
 async def test_csv_becomes_one_markdown_table(service: ExtractService):
     csv = b"Segment,Revenue\nSubscription,26.0\nServices,15.2\n"
     doc = await service.extract(csv, "https://example.test/data.csv", "text/csv")

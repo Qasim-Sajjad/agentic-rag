@@ -146,7 +146,10 @@ class QdrantSettings(_Section):
 
     url: str = "http://127.0.0.1:6333"
     path: str | None = None
-    collection: str = "corpus"
+    # Named for the vectors in it. A collection holds one width and one model:
+    # 384 dimension points and 1024 dimension points cannot share it, and two
+    # models' vectors in one space would retrieve worse than either alone.
+    collection: str = "corpus-small"
     timeout_seconds: float = 30.0
 
 
@@ -156,11 +159,17 @@ class IndexSettings(_Section):
     max_table_tokens: int = 2048
     simhash_hamming_threshold: int = 3
     embed_batch_size: int = 32
-    embed_model: str = "BAAI/bge-m3"
-    embed_dims: int = 1024
-    # BGE-M3 defaults to its full 8192 token window. Chunks target
-    # `target_tokens`, so encoding at 8192 pays for padding that is never used.
-    embed_max_length: int = 1024
+    # Measured on this machine, 512 token chunks: bge-m3 8.6 s per chunk,
+    # bge-small-en-v1.5 0.18 s. A 250 page document is roughly 600 chunks, which
+    # is 90 minutes against 2. The sparse half of hybrid retrieval moves to
+    # `rag.index.lexical` when the small model is selected. Set this back to
+    # "BAAI/bge-m3" with `embed_dims: 1024` and a different `qdrant.collection`
+    # to take the better model instead. See docs/DESIGN.md section 3.
+    embed_model: str = "BAAI/bge-small-en-v1.5"
+    embed_dims: int = 384
+    # Chunks target `target_tokens`, so a longer window pays for padding that is
+    # never used and costs roughly an order of magnitude on CPU.
+    embed_max_length: int = 512
     tenant_id: str = "default"
     # Object storage stand in. `CanonicalDoc` is written here as one immutable
     # JSON blob per document, which is what makes a re-embed a backfill rather

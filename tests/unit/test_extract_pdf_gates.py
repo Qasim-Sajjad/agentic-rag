@@ -71,6 +71,39 @@ def test_ranges_break_when_the_page_class_changes():
     ]
 
 
+def test_a_table_page_does_not_start_a_new_range():
+    """Both text classes run the same parser, so splitting on that boundary is
+    a new parser instance and a reopened document for no decision. A prospectus
+    that alternates prose and tables became 64 ranges over 252 pages."""
+    probes = [
+        PageProbe(0, 500, 0.0, False, 1),
+        PageProbe(1, 500, 0.0, True, 1),
+        PageProbe(2, 500, 0.0, False, 1),
+    ]
+    assert len(plan_ranges(probes, SETTINGS)) == 1
+
+
+def test_a_scanned_page_still_starts_a_new_range():
+    """That boundary is real: the other side goes to OCR."""
+    probes = [
+        PageProbe(0, 500, 0.0, True, 1),
+        PageProbe(1, 5, 0.0, False, 1),
+        PageProbe(2, 500, 0.0, True, 1),
+    ]
+    assert len(plan_ranges(probes, SETTINGS)) == 3
+
+
+def test_merged_text_ranges_still_respect_the_task_size():
+    settings = ExtractSettings(pages_per_task=2)
+    probes = [
+        PageProbe(0, 500, 0.0, False, 1),
+        PageProbe(1, 500, 0.0, True, 1),
+        PageProbe(2, 500, 0.0, False, 1),
+        PageProbe(3, 500, 0.0, True, 1),
+    ]
+    assert len(plan_ranges(probes, settings)) == 2
+
+
 def table(text: str) -> Block:
     return Block(type=BlockType.TABLE, text=text)
 

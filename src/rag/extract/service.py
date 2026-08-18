@@ -125,7 +125,8 @@ class PdfRouter:
                 "extract",
                 done,
                 len(ranges),
-                f"pages {page_range.start}-{page_range.end}, {len(blocks)} blocks",
+                f"pages {page_range.start}-{page_range.end}, "
+                f"{page_range.page_class}, {len(blocks)} blocks",
             )
             return blocks
 

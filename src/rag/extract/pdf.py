@@ -155,12 +155,27 @@ def plan_ranges(probes: list[PageProbe], settings: ExtractSettings) -> list[Page
 def _extends(
     ranges: list[PageRange], page_class: PageClass, settings: ExtractSettings
 ) -> bool:
+    """Two classes that run the same parser do not need separate ranges.
+
+    A prospectus alternates prose pages and pages with a table, and splitting on
+    that boundary turned 252 pages into 64 ranges: 64 parser instances, each
+    reopening the document, for a distinction that no longer selects anything.
+    Only the scanned boundary is real, because that side goes to OCR.
+    """
     if not ranges:
         return False
     last = ranges[-1]
-    if last.page_class is not page_class:
+    if _parses_as(last.page_class) is not _parses_as(page_class):
         return False
     return (last.end - last.start) < settings.pages_per_task
+
+
+def _parses_as(page_class: PageClass) -> PageClass:
+    """The class that decides the parser. Both text classes route to
+    `PyMuPDF4LLMParser`, see `src/rag/extract/SPEC.md`."""
+    if page_class is PageClass.SCANNED:
+        return PageClass.SCANNED
+    return PageClass.SIMPLE_TEXT
 
 
 #: Memo for `configure_layout`. A dict rather than a module scalar so the
@@ -209,16 +224,45 @@ class PyMuPDF4LLMParser:
         )
 
     def parse_pages(self, content: bytes, pages: list[int] | None) -> list[Block]:
+        """Per page, so a citation names the page it came from.
+
+        `page_chunks=True` returns one entry per page with its number attached,
+        at the same cost as the single blob it replaced. Attributing every block
+        in a range to the range's first page was tolerable when a range was a
+        few pages and became a lie once ranges merged to fifty.
+
+        Page numbers are as a reader sees them, counting from one. That is what
+        the OCR path already recorded, and two conventions in one field would
+        have been the worse bug.
+        """
         import pymupdf
         import pymupdf4llm
 
         with pymupdf.open(stream=content, filetype="pdf") as doc:
-            markdown = pymupdf4llm.to_markdown(doc, pages=pages, show_progress=False)
-        first_page = pages[0] if pages else 0
-        return [
-            block.model_copy(update={"provenance": Provenance(page=first_page)})
-            for block in blocks_from_markdown(str(markdown))
-        ]
+            per_page = pymupdf4llm.to_markdown(
+                doc, pages=pages, page_chunks=True, show_progress=False
+            )
+        blocks: list[Block] = []
+        for offset, entry in enumerate(per_page):
+            blocks.extend(_page_blocks(entry, pages, offset))
+        return blocks
+
+
+def _page_blocks(entry: Any, pages: list[int] | None, offset: int) -> list[Block]:
+    """One page of Markdown to blocks, stamped with that page's number.
+
+    The number comes from pymupdf4llm, which counts from one. The fallback
+    derives it from the requested page list, which counts from zero, so it adds
+    one rather than pretending the two agree.
+    """
+    metadata = entry.get("metadata") or {}
+    page = metadata.get("page")
+    if page is None:
+        page = (pages[offset] if pages and offset < len(pages) else offset) + 1
+    return [
+        block.model_copy(update={"provenance": Provenance(page=int(page))})
+        for block in blocks_from_markdown(str(entry.get("text", "")))
+    ]
 
 
 def merge_split_tables(blocks: list[Block]) -> list[Block]:

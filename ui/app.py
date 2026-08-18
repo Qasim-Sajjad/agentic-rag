@@ -14,7 +14,6 @@ anything: the server does.
 
 from __future__ import annotations
 
-import html
 import os
 import re
 import time
@@ -54,20 +53,24 @@ STATUS_MARK = {"ok": "🟢", "skipped": "🟡", "failed": "🔴"}
 # becomes a footnote rather than being left raw in the prose.
 CITATION_ID = re.compile(r"\[([0-9a-fA-F]{8,64})\]")
 
-# No colours, so the answer follows whichever theme the reader is using.
+# Typography only, no colours, so the page follows whichever theme the reader
+# is using. Streamlit's own Markdown container is the target because the answer
+# is now rendered as Markdown rather than wrapped in a div of ours.
 ANSWER_CSS = """
 <style>
-.rag-answer { font-size: 1.06rem; line-height: 1.75; max-width: 46rem; }
-.rag-answer p { margin: 0 0 0.95rem 0; }
-.rag-answer sup.cite {
-  font-size: 0.68em;
-  font-weight: 600;
-  padding: 0 0.12em;
-  opacity: 0.65;
-  vertical-align: super;
-}
+div[data-testid="stMarkdownContainer"] p,
+div[data-testid="stMarkdownContainer"] li { line-height: 1.7; }
+div[data-testid="stMarkdownContainer"] li { margin-bottom: 0.35rem; }
+div[data-testid="stMarkdownContainer"] ol,
+div[data-testid="stMarkdownContainer"] ul { margin-bottom: 0.9rem; }
+div[data-testid="stMarkdownContainer"] table { font-size: 0.92rem; }
 </style>
 """
+
+#: A citation becomes a superscript digit rather than a `<sup>` tag, so the
+#: answer can be rendered as Markdown with HTML off. A document this system did
+#: not write must never be able to put markup on the page.
+SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 SINGLE_WRITER_NOTE = (
     "Qdrant runs in process and is single writer, so the API server is the only "
@@ -481,24 +484,28 @@ def _filters(source_id: str, doc_type: str) -> dict[str, Any]:
 
 
 def _render_answer(answer: str, citations: list[dict[str, Any]]) -> None:
-    """Renders the answer readably without touching what the model produced.
+    """Renders the answer as the Markdown it is, without touching the text.
+
+    The model writes headings, bold and numbered lists. Escaping all of that and
+    wrapping it in paragraph tags, which is what this did before, put literal
+    asterisks on the screen and ran every list item into one block.
+
+    HTML stays off. The answer is written from documents this system does not
+    control, so a document carrying markup must not become markup here, and
+    Streamlit escapes any it finds. That is also why a footnote marker is a
+    superscript digit rather than a `<sup>` tag: nothing here needs an exception
+    to that rule.
 
     The raw chunk ids stay in the model output on purpose: the citation check
     rejects any id that was not in the retrieved set, and that check is the
-    grounding guarantee. Renumbering them to footnotes is a display concern, so
-    it happens here and not in the prompt.
+    grounding guarantee. Renumbering them is a display concern, so it happens
+    here and not in the prompt.
     """
     st.markdown(ANSWER_CSS, unsafe_allow_html=True)
-    body, order = _footnote(_paragraphs(answer))
-    st.markdown(f"<div class='rag-answer'>{body}</div>", unsafe_allow_html=True)
+    body, order = _footnote(answer)
+    with st.container(border=True):
+        st.markdown(body)
     _render_sources(order, citations)
-
-
-def _paragraphs(answer: str) -> str:
-    """Escaped first. The answer is written from documents this system does not
-    control, so a document carrying markup must not become markup here."""
-    parts = [part.strip() for part in html.escape(answer).split("\n\n")]
-    return "".join(f"<p>{part}</p>" for part in parts if part)
 
 
 def _footnote(text: str) -> tuple[str, list[str]]:
@@ -509,7 +516,7 @@ def _footnote(text: str) -> tuple[str, list[str]]:
         chunk_id = match.group(1).lower()
         if chunk_id not in order:
             order.append(chunk_id)
-        return f"<sup class='cite'>{order.index(chunk_id) + 1}</sup>"
+        return str(order.index(chunk_id) + 1).translate(SUPERSCRIPT)
 
     return CITATION_ID.sub(swap, text), order
 
@@ -521,32 +528,72 @@ def _render_sources(order: list[str], citations: list[dict[str, Any]]) -> None:
         st.caption("no citations on this answer")
         return
     urls = {
-        str(item.get("chunk_id", "")).lower(): item.get("source_url", "")
+        str(item.get("chunk_id", "")).lower(): str(item.get("source_url", ""))
         for item in citations
     }
-    st.markdown("**Sources**")
-    for number, chunk_id in enumerate(order, start=1):
-        url = urls.get(chunk_id) or "cited id was not in the returned citation list"
-        st.markdown(f"{number}. {url}  \n`{chunk_id}`")
+    with st.expander(f"Sources ({len(order)})", expanded=True):
+        for number, chunk_id in enumerate(order, start=1):
+            _render_source(number, chunk_id, urls.get(chunk_id, ""))
+
+
+def _render_source(number: int, chunk_id: str, url: str) -> None:
+    """One line per citation, marked with the superscript the answer uses.
+
+    An id the endpoint did not return is stated rather than dropped: it would
+    mean the model cited something outside the retrieved set, which the
+    validator should have caught, and a silent gap here would be the only sign.
+    """
+    mark = str(number).translate(SUPERSCRIPT)
+    if not url:
+        st.markdown(f"{mark} cited id was not in the returned citation list")
+        st.caption(chunk_id)
+        return
+    label = _source_label(url)
+    shown = f"[{label}]({url})" if url.startswith("http") else f"`{label}`"
+    st.markdown(f"{mark} {shown}")
+    st.caption(chunk_id)
+
+
+def _source_label(url: str) -> str:
+    """The file or the page, not the whole url. An uploaded document's synthetic
+    url ends in a content digest, and a list of digests names nothing."""
+    parts = [part for part in url.split("/") if part]
+    if url.startswith("upload://") and len(parts) >= 2:
+        return parts[-2]
+    return parts[-1] if parts else url
 
 
 def _render_retrieved(chunks: list[dict[str, Any]], key: str) -> None:
     """`key` names the panel, because Streamlit widget keys are global and the
     Agent and Search tabs both draw this."""
     if not chunks:
+        st.caption("no chunks were returned")
         return
-    st.subheader(f"Retrieved chunks ({len(chunks)})")
     raw = st.toggle(
         "show the stored text instead of rendering it", key=f"{key}-raw-chunks"
     )
     for chunk in chunks:
-        path = " > ".join(chunk.get("section_path") or []) or "no section path"
-        with st.expander(f"{chunk.get('score', 0):.3f}  {path}"):
-            st.caption(chunk.get("source_url", ""))
-            if chunk.get("page_no") is not None:
-                st.caption(f"page {chunk['page_no']}")
-            _render_chunk_text(str(chunk.get("text", "")), raw)
-            st.code(chunk.get("chunk_id", ""), language="text")
+        with st.expander(_chunk_label(chunk)):
+            _render_retrieved_body(chunk, raw)
+
+
+def _chunk_label(chunk: dict[str, Any]) -> str:
+    """Score first, then where it came from. The section path is what a reader
+    recognises, the score is what explains the ordering."""
+    path = " > ".join(chunk.get("section_path") or []) or "no section path"
+    page = chunk.get("page_no")
+    suffix = f"  ·  page {page}" if page is not None else ""
+    return f"{chunk.get('score', 0):.3f}  {path}{suffix}"
+
+
+def _render_retrieved_body(chunk: dict[str, Any], raw: bool) -> None:
+    """The url is a label, not a wall of text. An uploaded document's synthetic
+    url ends in a content digest and reads as noise at full length."""
+    url = str(chunk.get("source_url", ""))
+    label = _source_label(url)
+    st.caption(f"[{label}]({url})" if url.startswith("http") else label)
+    _render_chunk_text(str(chunk.get("text", "")), raw)
+    st.caption(chunk.get("chunk_id", ""))
 
 
 def search_panel(api: Api) -> None:
@@ -599,21 +646,24 @@ def _render_search(body: dict[str, Any], filters: dict[str, Any]) -> None:
         "is why it is often lower than top_k."
     )
     _render_steps(body.get("steps") or [])
-    _render_retrieved(body.get("chunks") or [], "search")
+    found = body.get("chunks") or []
+    st.markdown(f"**Retrieved chunks ({len(found)})**")
+    _render_retrieved(found, "search")
 
 
 def _render_steps(steps: list[dict[str, Any]]) -> None:
-    """The retrieval funnel, stage by stage. `candidates` is how many chunks left
-    each stage, which is what shows where a missing chunk was dropped: fused into
-    a pool of 60, reranked, then cut to 4 by the score floor."""
+    """The retrieval funnel as a table. `candidates` is how many chunks left
+    each stage, which is what shows where a missing chunk was dropped: a pool of
+    100 fused to 60, reranked, then cut to 4 by the score floor."""
     if not steps:
         return
     st.markdown("**Retrieval steps**")
-    for step in steps:
-        st.markdown(
-            f"- **{step.get('stage', '')}**  {step.get('candidates', 0)} candidates  "
-            f"{step.get('latency_ms', 0)} ms  ·  {step.get('note', '')}"
-        )
+    rows = "\n".join(
+        f"| {step.get('stage', '')} | {step.get('candidates', 0)} | "
+        f"{step.get('latency_ms', 0)} | {step.get('note', '')} |"
+        for step in steps
+    )
+    st.markdown("| stage | candidates | ms | detail |\n|---|---:|---:|---|\n" + rows)
 
 
 def agent_panel(api: Api) -> None:
@@ -640,17 +690,31 @@ def agent_panel(api: Api) -> None:
 
 
 def render_agent(body: dict[str, Any]) -> None:
+    """Answer first, evidence one click away.
+
+    Three tabs rather than one long column: a reviewer reads the answer, then
+    asks how it was produced, then asks what it was produced from. Stacking all
+    three meant scrolling past the graph trace to reach the chunks.
+    """
     steps = body.get("trace") or []
-    st.markdown("### Answer")
-    _render_answer(body.get("answer", ""), body.get("citations") or [])
-    st.divider()
-    _render_agent_metrics(body, steps)
-    st.markdown("### Path taken")
-    st.markdown(_path_line(steps))
-    _render_models_and_prompts(steps)
-    for index, step in enumerate(steps):
-        _render_step(index, step)
-    _render_retrieved(body.get("chunks") or [], "agent")
+    answer, path, chunks = st.tabs(
+        [
+            "Answer",
+            f"Path and tools ({len(steps)})",
+            f"Retrieved chunks ({len(body.get('chunks') or [])})",
+        ]
+    )
+    with answer:
+        _render_answer(body.get("answer", ""), body.get("citations") or [])
+    with path:
+        _render_agent_metrics(body, steps)
+        st.markdown("**Path taken**")
+        st.markdown(_path_line(steps))
+        _render_models_and_prompts(steps)
+        for index, step in enumerate(steps):
+            _render_step(index, step)
+    with chunks:
+        _render_retrieved(body.get("chunks") or [], "agent")
 
 
 def _render_agent_metrics(body: dict[str, Any], steps: list[dict[str, Any]]) -> None:

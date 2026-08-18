@@ -405,10 +405,15 @@ async def test_the_chunk_preview_is_capped():
     assert len(response.chunk_preview) == PREVIEW_LIMIT
 
 
-async def test_long_chunk_text_is_marked_as_truncated():
-    deps = build_deps(pipeline=FakePipeline(a_result([a_chunk(text="word " * 400)])))
+async def test_a_previewed_chunk_is_returned_whole():
+    """The cap is on how many chunks, not on how much of one. A chunk cut mid
+    table is the defect a reviewer opens this preview to look for, and cutting
+    it here would manufacture that defect."""
+    text = "word " * 400
+    deps = build_deps(pipeline=FakePipeline(a_result([a_chunk(text=text)])))
     response = await ingest_url(IngestUrlRequest(url="https://quotes.test/1"), deps)
-    assert response.chunk_preview[0].truncated is True
+    assert response.chunk_preview[0].text == text
+    assert response.chunk_preview[0].truncated is False
 
 
 async def test_an_upload_is_not_fetched_and_the_upload_stage_is_not_timed():

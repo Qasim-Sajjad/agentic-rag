@@ -89,10 +89,32 @@ Ultra 7 155U, no GPU):
 | bge-small-en-v1.5 | 384 | none | 78.8 |
 
 That is a 20 to 60x gap depending on chunk length, and it is the real cost of
-the architectural choice. BGE-M3 is still the right default here because the
-sparse side comes free, but on this hardware a 1000 chunk corpus takes about 20
-minutes to embed and a 100K document corpus is not feasible without a GPU. On a
-GPU the same model is the obvious pick and the gap closes.
+the architectural choice. It is also the reason the default is now the small
+model: a 252 page prospectus is roughly 600 chunks, which BGE-M3 embeds in 90
+minutes on this CPU. Nobody watches that, and an ingest nobody can finish is not
+a retrieval system.
+
+**What the default is now.** `bge-small-en-v1.5` for the dense side, and the
+sparse side computed in `src/rag/index/lexical.py`: a hashed bag of words with
+sublinear term frequency, the scoring half of BM25 without length
+normalisation. Hybrid survives the swap, which matters because the lexical half
+is what finds a course code or a part number that no embedding places near the
+query. What is given up is real and worth stating: BGE-M3's sparse head weights
+a term by its context, this one by its count; the dense side drops from 1024 to
+384 dimensions and from an 8192 token window to 512, so a table chunk over 512
+tokens is truncated for embedding purposes though never for storage or display.
+
+Measured end to end after the swap, a 252 page 55 MB PDF through the API:
+probe 13s, extract 35s, chunk 0.02s, embed 38s, store 0.4s, 89 seconds total.
+The same document on BGE-M3 would have spent about an hour in embed alone.
+
+Switching back is `index.embed_model: BAAI/bge-m3`, `embed_dims: 1024` and a
+different `qdrant.collection`, because one collection holds one vector width.
+The corpus does not need re-scraping to follow: `uv run python -m rag.index.reembed`
+streams `chunk.embed_text` out of Postgres into the new collection. That is the
+backfill this document has claimed since the first draft, and it is now a
+runnable module rather than a paragraph. On a GPU, BGE-M3 is the obvious pick
+and this whole trade disappears.
 
 `evals/compare_embeddings.py` runs the head to head on the frozen gold set,
 backfilling each model into its own collection from the `chunk` table rather
