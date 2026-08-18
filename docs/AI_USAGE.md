@@ -350,6 +350,42 @@ Not done: page numbers are fixed for documents ingested from now on. Anything
 already in the corpus keeps the page it was stamped with, because the number
 lives in the chunk and the re-embed backfill only replaces vectors.
 
+### 2026-08-18, session 11, page furniture
+Tool: Claude Code (Opus 5)
+Asked for: A faxed gynecology consultation produced chunks that seemed to carry
+no information, and the chunk preview was being truncated.
+Kept: the measurement path. The document was already extracted and its
+`CanonicalDoc` was in the doc store, so the whole investigation ran against
+stored blocks rather than by re-running a paid OCR pass.
+Corrected: the premise, with evidence. Extraction had worked: 22 chunks with
+medications, GYN history, review of systems, exam findings and the sign-off were
+in Postgres. What the trace showed was only the chunks that were fresh, because
+the document had been ingested before. The truncation was the old preview cap,
+already removed in the previous session and still running in the user's server.
+Found: what was actually wrong. Every page of the fax carries a patient banner,
+the sending machine's line, the clinic address and a form artifact, and all of
+it survives extraction because it is printed on the page. The first chunk was
+100 percent furniture. Worse, banner only chunks are identical, so they collide
+on `chunk_hash` and dedup drops them, which is why the indexed count stopped
+describing the document.
+Rewrote: nothing. `strip_repeated` is new: short paragraphs whose text, with
+digits masked, repeat at least three times. Measured on that document, 118
+blocks to 77, and the first chunk went from the fax banner to the medication
+list.
+Mine, not the tool's: the second bound. Masking digits alone would delete three
+measurements that differ only in their numbers, so a line whose numbers move in
+more than three places is data, not furniture. My own test fixture caught this:
+three pages carrying one sentence with a changing page number were correctly
+deleted as furniture, which told me the fixture was unrealistic and the rule
+needed the guard.
+Also found: the fixture pages were short enough to fail gate 1, so the test
+suite had been sending them to Claude for OCR. Text an author typed, billed as
+though it were an image.
+Verified: ruff, mypy, 469 tests.
+Not done: the SimHash near duplicate index is still in memory, so a re-ingest of
+an OCR'd document after a restart writes a second near copy of every chunk. That
+is why this document has 22 chunks and about 14 distinct ones. Recorded as a gap.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

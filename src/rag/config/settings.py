@@ -126,6 +126,16 @@ class OcrSettings(_Section):
 
 
 class ExtractSettings(_Section):
+    # Page furniture: a banner, a running header, a fax footer, a form artifact.
+    # Printed on the page, so both the text layer and OCR read it, and it is not
+    # content. See src/rag/extract/boilerplate.py.
+    strip_repeated_blocks: bool = True
+    repeat_min_count: int = 3
+    repeat_max_chars: int = 200
+    # How many number positions may differ between occurrences of the same
+    # masked line. A footer's clock and page counter move, a row of readings
+    # moves in every number it has.
+    repeat_max_varying: int = 3
     min_chars_per_page: int = 100
     max_garbage_ratio: float = 0.2
     pages_per_task: int = 50

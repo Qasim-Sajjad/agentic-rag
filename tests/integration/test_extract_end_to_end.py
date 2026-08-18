@@ -66,15 +66,33 @@ async def test_the_same_bytes_produce_the_same_content_hash(service: ExtractServ
     assert first.content_hash == second.content_hash
 
 
+#: Distinct wording per page. Three pages carrying the same sentence with only a
+#: number changed is page furniture by any reasonable definition, and
+#: `strip_repeated` would correctly remove all of it, leaving nothing to test.
+SUBJECTS = ("bearing housings", "flange tolerances", "impeller clearances")
+
+
 def a_three_page_pdf() -> bytes:
     """Built here rather than committed, because the only thing this fixture
-    needs to be is more than one page long."""
+    needs to be is more than one page long.
+
+    Each page carries well over `min_chars_per_page`, or gate 1 would call it
+    scanned and the test would spend real money on OCR to read text that was
+    never an image.
+    """
     import pymupdf
 
     doc = pymupdf.open()
-    for number in range(3):
+    for number, subject in enumerate(SUBJECTS):
         page = doc.new_page()
-        page.insert_text((72, 72), f"Page {number + 1} of the report. " * 20)
+        body = (
+            f"Page {number + 1} of the report, which covers {subject} in detail. "
+            f"The inspection team reviewed {subject} during the maintenance "
+            f"window and recorded their findings against the service manual. "
+            f"Nothing on this page repeats what the other pages say about "
+            f"{subject}, which is what makes it content."
+        )
+        page.insert_textbox(pymupdf.Rect(72, 72, 520, 700), body, fontsize=11)
     content: bytes = doc.tobytes()
     return content
 

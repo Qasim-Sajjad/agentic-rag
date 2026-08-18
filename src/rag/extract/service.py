@@ -11,6 +11,7 @@ import asyncio
 
 from rag.config.settings import ExtractSettings, Settings, get_settings
 from rag.extract import router
+from rag.extract.boilerplate import strip_repeated
 from rag.extract.ocr import VLMOCRParser
 from rag.extract.office import DoclingParser, PlainTextParser, TabularParser
 from rag.extract.pdf import (
@@ -82,7 +83,11 @@ class PdfRouter:
         blocks = await self._parse_ranges(content, ranges, source_url, report)
         if not blocks:
             raise EmptyExtractionError(f"no usable pages in {source_url}")
-        merged = merge_split_tables(blocks)
+        # After reassembly, because furniture is counted across the whole
+        # document and a range on its own cannot tell a banner from a sentence.
+        merged = strip_repeated(merge_split_tables(blocks), self._settings)
+        if not merged:
+            raise EmptyExtractionError(f"only page furniture in {source_url}")
         return CanonicalDoc(
             doc_id=doc_id_for(source_url),
             source_url=source_url,

@@ -155,6 +155,31 @@ implements is unchanged, and `ExtractService` looks for `parse_progress` the way
 retrieval looks for `embed_queries`. A minutes long extract that reports nothing
 cannot be told apart from one that has hung.
 
+## Page furniture
+
+A faxed clinical note carries the patient banner at the top of every page, the
+sending machine's line at the foot of every page, and a form artifact wherever a
+field was left blank. A prospectus carries a running header. All of it is
+printed on the page, so the text layer and OCR both read it, and none of it is
+content.
+
+`strip_repeated` in `src/rag/extract/boilerplate.py` removes it after
+reassembly, where the whole document is visible: a single range cannot tell a
+banner from a sentence. A block is furniture when it is a paragraph of at most
+`repeat_max_chars` (default 200) whose text, with digits masked, appears at
+least `repeat_min_count` (default 3) times. Digits are masked because the page
+number, the timestamp and the fax counter change per page while the line does
+not.
+
+Headings and tables are never dropped. A repeated heading is document
+structure, and the sections under it would lose their section path; a repeated
+table is data the document contains.
+
+Measured on a five page faxed consultation: 118 blocks to 77, and the first
+chunk went from pure banner to the medication list. Furniture also collides on
+`chunk_hash`, so banner only chunks were being dropped by dedup and the indexed
+count stopped describing the document.
+
 ## OCR
 
 `VLMOCRParser` sends the page range to Claude as a `document` block and takes
@@ -207,6 +232,9 @@ Unit:
 - A table page does not start a new range, a scanned page does, and a merged
   text run still respects `pages_per_task`
 - Every page's blocks carry that page's number, counting from one
+- A banner repeated on every page is dropped, with digits masked so a per page
+  footer still matches, while a repeated heading, a repeated table and a long
+  repeated paragraph are all kept
 - The probe reports each page as it reads it, and extraction announces itself
   before the first range finishes
 - Unknown MIME returns `UNSUPPORTED_TYPE` and does not raise

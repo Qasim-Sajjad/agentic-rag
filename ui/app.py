@@ -415,7 +415,10 @@ def _render_chunks(trace: dict[str, Any]) -> None:
     if not chunks:
         return
     st.subheader(f"Chunks written ({len(chunks)} shown)")
-    st.caption("A preview. The endpoint caps how many chunks and how many characters.")
+    st.caption(
+        "A preview: the first 12 chunks, each returned whole. A chunk cut mid "
+        "table is the thing worth checking for, so the cap is on how many."
+    )
     raw = st.toggle(
         "show the stored text instead of rendering it",
         key="chunks-raw",

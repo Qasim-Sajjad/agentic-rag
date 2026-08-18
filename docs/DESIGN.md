@@ -401,6 +401,14 @@ Every shortcut, stated plainly.
 - `ChunkRepository.save_many` is one INSERT per chunk. Measured at a few percent
   of ingest time on a long document, so not the bottleneck, but it should be a
   multi row INSERT.
+- The SimHash near duplicate index lives in memory, so it is empty after a
+  restart and only catches near duplicates ingested by the same process. Exact
+  duplicates are caught regardless, by content hash in Postgres. This matters
+  most for OCR'd documents: a VLM transcribes the same scan slightly differently
+  each run, so the content hash differs, the near duplicate check is the only
+  thing that would catch it, and a re-ingest after a restart writes a second
+  near copy of every chunk. Observed on a faxed consultation: 22 chunks stored
+  for a document that has about 14.
 - The ingest endpoints write chunks under `index.tenant_id` from config, not
   under the tenant the API key maps to. One key and one tenant makes those the
   same value today, so nothing is currently wrong, but a second tenant could
