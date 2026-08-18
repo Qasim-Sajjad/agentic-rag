@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from rag.extract.pdf import plain_text_blocks
 from rag.extract.service import ExtractService
 from rag.extract.types import BlockType, DocType
 
@@ -148,6 +149,49 @@ async def test_page_numbers_count_from_one(service: ExtractService):
     doc = await service.extract(a_three_page_pdf(), URL, "application/pdf")
     first = next(b for b in doc.blocks if "Page 1 of the report" in b.text)
     assert first.provenance.page == 1
+
+
+def a_two_column_pdf() -> bytes:
+    """Two text boxes side by side, which is what a plain read down the page
+    would splice into half sentences."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        pymupdf.Rect(60, 80, 290, 700),
+        "LEFT COLUMN. " + "The left column discusses bearing housings at length. " * 4,
+        fontsize=10,
+    )
+    page.insert_textbox(
+        pymupdf.Rect(310, 80, 540, 700),
+        "RIGHT COLUMN. " + "The right column discusses flange tolerances instead. " * 4,
+        fontsize=10,
+    )
+    content: bytes = doc.tobytes()
+    return content
+
+
+def test_the_plain_text_rescue_reads_columns_in_order():
+    """Left column before right. Read straight down the page instead, a two
+    column layout produces sentences spliced from two halves, which is worse
+    than losing the page because it reads as fluent text and is not."""
+    blocks = plain_text_blocks(a_two_column_pdf(), [0])
+    joined = " ".join(block.text for block in blocks)
+    assert joined.index("LEFT COLUMN") < joined.index("RIGHT COLUMN")
+
+
+def test_the_plain_text_rescue_keeps_printed_blocks_apart():
+    """One block per printed block, not one per page: the chunker needs
+    paragraph boundaries, and a running header can only be recognised as
+    furniture if it is its own block."""
+    blocks = plain_text_blocks(a_two_column_pdf(), [0])
+    assert len(blocks) >= 2
+
+
+def test_the_plain_text_rescue_stamps_the_page():
+    blocks = plain_text_blocks(a_two_column_pdf(), [0])
+    assert {block.provenance.page for block in blocks} == {1}
 
 
 async def test_csv_becomes_one_markdown_table(service: ExtractService):

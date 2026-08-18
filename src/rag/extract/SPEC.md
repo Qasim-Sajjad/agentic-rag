@@ -155,6 +155,37 @@ implements is unchanged, and `ExtractService` looks for `parse_progress` the way
 retrieval looks for `embed_queries`. A minutes long extract that reports nothing
 cannot be told apart from one that has hung.
 
+## Silent text loss, and the check for it
+
+`pymupdf4llm`'s cheap path drops text on some layouts. Measured on a 62 page
+MBBS handbook: 42 of its 48 text layer pages came back holding 40 to 60 percent
+of what the page says, and a sentence ended mid clause with nothing anywhere to
+report it. Nothing failed. The chunk was well formed, the trace was green, and
+the answer to a question about that section was simply absent.
+
+So the parser is not trusted on its own. The probe already counted each page's
+text layer, so after the fast pass every page is compared against its own count,
+and a page holding less than `min_capture_ratio` (default 0.8) of it was read
+badly whatever the parser reports. `rag.extract.recovery` makes that judgement
+and `PdfRouter._recover` acts on it:
+
+| Page | Rescue | Cost |
+|---|---|---|
+| Probe found a table | re-read on the layout path | about 5 s per page |
+| Anything else | text layer, one block per printed block, columns in order | about 1 ms per page |
+
+Only a table justifies the layout path. A multi column page is handled by
+reading the text layer in column order instead: blocks are sorted left column
+first, then down the page, because reading straight down a two column page
+splices two half sentences into one fluent looking sentence that says something
+neither column said.
+
+Measured on that handbook: 4 s for the fast pass, 11 s to re-read the 3 table
+pages, 0.3 s for the other 39, and the extracted text went from 58,130
+characters to 95,201 against a text layer of 96,778. Sending every page the
+column heuristic flagged to the layout path instead cost 139 s for the same
+text, and sending every page cost 221 s.
+
 ## Page furniture
 
 A faxed clinical note carries the patient banner at the top of every page, the
@@ -232,6 +263,10 @@ Unit:
 - A table page does not start a new range, a scanned page does, and a merged
   text run still respects `pages_per_task`
 - Every page's blocks carry that page's number, counting from one
+- A page holding half its text layer is thin, a page holding all of it is not, a
+  page missing entirely is, and a scanned page never is
+- A recovered page goes back in page order, and only the named pages change
+- The plain text rescue reads columns in order and keeps printed blocks apart
 - A banner repeated on every page is dropped, with digits masked so a per page
   footer still matches, while a repeated heading, a repeated table and a long
   repeated paragraph are all kept

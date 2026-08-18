@@ -347,6 +347,13 @@ Every shortcut, stated plainly.
   constant 0.7: a VLM returns no calibrated score, and a self reported one would
   be worse than an honest constant.
 - OCR is billed per page with no spend cap, the same gap as tier 4.
+- `pymupdf4llm`'s fast path loses text on some layouts, so every page is checked
+  against its own text layer count and re-read when it falls short. The check
+  catches loss, it does not prevent it: a page whose text layer is itself
+  incomplete has nothing to be compared against.
+- The column heuristic over reports. It flagged 27 pages of a single column
+  handbook as two column. Harmless now that only table pages take the expensive
+  layout path, and still wrong.
 - Div based HTML table layouts are not reconstructed.
 - Contextual retrieval not implemented. Known recall gain, 500K LLM calls.
 - No RAGAS answer quality set. Needs reference answers, unstable at this sample

@@ -386,6 +386,37 @@ Not done: the SimHash near duplicate index is still in memory, so a re-ingest of
 an OCR'd document after a restart writes a second near copy of every chunk. That
 is why this document has 22 chunks and about 14 distinct ones. Recorded as a gap.
 
+### 2026-08-18, session 12, silent text loss
+Tool: Claude Code (Opus 5)
+Asked for: A chunk from an MBBS handbook stopped mid sentence. Why does the UI
+not show the whole chunk?
+Corrected: the question. The UI was showing the whole chunk. The chunk itself
+ended mid sentence, because extraction had lost the rest of the page. On that
+document `pymupdf4llm`'s cheap path returned 705 characters of a page whose text
+layer holds 1,620, and 42 of the 48 text pages were affected the same way.
+Corrected: my own claim from two sessions ago. I measured `use_layout(False)` as
+costing "0.7 percent less text" on one clean report and made it the default for
+every document. On this handbook it costs 40 percent of the text. The
+measurement was real and the generalisation was not, and nothing in the system
+would have told anyone: no error, a green trace, and an answer that is simply
+missing.
+Rewrote: nothing, added a check. The probe already counts each page's text
+layer, so comparing what was extracted against what the page holds is free. A
+page under 80 percent is re-read: on the layout path when the probe found a
+table, and from the text layer otherwise.
+Mine, not the tool's: that the cheap rescue reads columns in order. Reading
+straight down a two column page splices two half sentences into one fluent
+looking sentence that says something neither column said, which is a worse
+failure than the missing text it was fixing. Also that only tables justify the
+layout path: routing every page the column heuristic flagged there cost 139
+seconds against 16 for the same text.
+Verified: the handbook end to end. 58,130 characters to 95,201, against a text
+layer of 96,778, in 35 seconds. The sentence that prompted the question now ends
+where the document ends it. ruff, mypy and 482 tests.
+Not done: the column heuristic over reports. It flagged 27 pages of a
+single column handbook as two column, which is harmless now that only tables
+take the expensive path, but it is still wrong.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

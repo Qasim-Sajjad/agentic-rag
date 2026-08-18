@@ -303,3 +303,66 @@ def _has_header(table_markdown: str) -> bool:
     """A markdown table header is the `|---|---|` separator on the second line."""
     lines = table_markdown.splitlines()
     return len(lines) > 1 and set(lines[1].replace("|", "").strip()) <= set("-: ")
+
+
+def plain_text_blocks(content: bytes, pages: list[int]) -> list[Block]:
+    """The text layer as one block per printed block, in reading order.
+
+    The cheapest possible rescue for a page the fast Markdown path read badly:
+    about a millisecond, and it cannot lose text, because it is the same call the
+    gate already makes to decide whether a page has a text layer. What it loses
+    is Markdown structure, which is why the router only sends pages here when the
+    probe found no table.
+
+    One block per printed block rather than one per page, for two reasons: the
+    chunker gets paragraph boundaries to work with, and a running header becomes
+    its own block, which is the only way `strip_repeated` can remove it.
+    """
+    import pymupdf
+
+    blocks: list[Block] = []
+    with pymupdf.open(stream=content, filetype="pdf") as doc:
+        for number in pages:
+            page = doc[number]
+            width = float(page.rect.width) or 1.0
+            raw = [item for item in page.get_text("blocks") if str(item[4]).strip()]
+            for item in sorted(raw, key=lambda b: _reading_order(b, width)):
+                blocks.append(_text_block(str(item[4]), number + 1))
+    return blocks
+
+
+def _reading_order(item: Any, width: float) -> tuple[int, float]:
+    """Left column before right, then top to bottom.
+
+    A two column page read straight down the page interleaves the columns and
+    produces sentences that are two half sentences spliced together, which is
+    worse than losing the page: it reads as fluent text and is not.
+    """
+    left = float(item[0]) / width
+    column = 1 if left >= 0.5 else 0
+    return column, float(item[1])
+
+
+def _text_block(text: str, page: int) -> Block:
+    return Block(
+        type=BlockType.PARAGRAPH,
+        text=" ".join(text.split()),
+        provenance=Provenance(page=page),
+    )
+
+
+def parse_with_layout(
+    parser: PyMuPDF4LLMParser, content: bytes, pages: list[int]
+) -> list[Block]:
+    """Re-read pages on pymupdf4llm's layout path, then put the switch back.
+
+    Roughly 5 seconds a page against 80 milliseconds, so this is for pages the
+    fast path demonstrably mangled and no others. The switch is a library
+    global, which is why this runs after the parallel ranges have finished
+    rather than inside one of them.
+    """
+    configure_layout(True)
+    try:
+        return parser.parse_pages(content, pages)
+    finally:
+        configure_layout(False)

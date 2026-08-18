@@ -144,6 +144,9 @@ class ExtractSettings(_Section):
     # it against 227 ms/page without, for 0.7% less extracted text. Scanned
     # ranges go to the VLM, never to pymupdf4llm, so the expensive path buys
     # nothing here. On means 21 minutes for a 500 page PDF, off means 2.
+    # A page whose Markdown holds less than this share of its own text layer was
+    # read badly, whatever the parser thinks. See PdfRouter._recover.
+    min_capture_ratio: float = 0.8
     pymupdf_use_layout: bool = False
     # Page ranges are independent, so they extract concurrently. Capped because
     # each one is a CPU bound thread and oversubscribing thrashes.
