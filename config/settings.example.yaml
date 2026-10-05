@@ -68,6 +68,21 @@ extract:
   min_chars_per_page: 100
   max_garbage_ratio: 0.2
   pages_per_task: 50
+  max_parallel_ranges: 4
+
+  # pymupdf4llm's layout path costs about 5 s per page against 80 ms, so it is
+  # off by default and used only to rescue a page the fast path read badly.
+  pymupdf_use_layout: false
+  # A page holding less than this share of its own text layer was read badly,
+  # whatever the parser reports. See src/rag/extract/recovery.py.
+  min_capture_ratio: 0.8
+
+  # Repeated page furniture: a running header, a fax footer, a form artifact.
+  # See src/rag/extract/boilerplate.py.
+  strip_repeated_blocks: true
+  repeat_min_count: 3
+  repeat_max_chars: 200
+  repeat_max_varying: 3
 
   # VLM OCR for page ranges with no usable text layer. Uses the Anthropic key
   # already in .env. Set enabled: false to go back to skipping scanned ranges.
@@ -86,7 +101,9 @@ qdrant:
   # server with docker compose up -d qdrant and set path to null.
   url: "http://127.0.0.1:6333"
   path: data/qdrant
-  collection: corpus
+  # One collection holds one vector width and one model. Changing the embedding
+  # model means changing this too, and running src/rag/index/reembed.py.
+  collection: corpus-small
   timeout_seconds: 30.0
 
 index:
@@ -95,9 +112,13 @@ index:
   max_table_tokens: 2048
   simhash_hamming_threshold: 3
   embed_batch_size: 32
-  embed_model: BAAI/bge-m3
-  embed_dims: 1024
-  embed_max_length: 1024   # chunks target 512 tokens, so 8192 is wasted padding
+  # Measured on CPU, per 512 token chunk: bge-m3 8.6 s, bge-small 0.18 s. A 250
+  # page document is roughly 600 chunks, so 90 minutes against 2. The sparse half
+  # of hybrid retrieval moves to src/rag/index/lexical.py with the small model.
+  # For bge-m3 instead: embed_dims 1024 and a different qdrant.collection.
+  embed_model: BAAI/bge-small-en-v1.5
+  embed_dims: 384
+  embed_max_length: 512   # chunks target 512 tokens, longer is wasted padding
   tenant_id: default
   doc_store_path: data/docs
 

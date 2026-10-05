@@ -417,6 +417,36 @@ Not done: the column heuristic over reports. It flagged 27 pages of a
 single column handbook as two column, which is harmless now that only tables
 take the expensive path, but it is still wrong.
 
+### 2026-10-06, session 13, server provisioning
+Tool: Claude Code (Opus 5)
+Asked for: A bash script that installs everything on a separate server, runs the
+API on 8000 behind ngrok, and prints the url for the Streamlit Cloud front end.
+Kept: the install order the README already documents, because it is the order
+that works: uv, then the venv, then the extras, then migrations, then the source
+registry seed.
+Corrected: the shape of the answer. The request was a script that starts two
+processes; what the problem needs is two systemd units. The point of moving off
+the laptop is that nothing has to stay logged in, and `nohup` does not survive a
+reboot.
+Found in passing, and this one mattered: `config/settings.example.yaml` is the
+only config in the repository, because `settings.yaml` is gitignored. It still
+said `BAAI/bge-m3`, `embed_dims: 1024` and `collection: corpus`. A fresh server
+would have come up on the model we replaced three sessions ago for being 47
+times slower, with none of the extract settings added since. The example now
+matches the code defaults.
+Mine, not the tool's: the generated API key, and the assertion that goes with it.
+The example ships `dev-key`, this url is public, and a key published in a
+repository is not a key. The script checks the running service rejects `dev-key`
+before it reports success, rather than assuming the config it just wrote took
+effect.
+Also mine: Qdrant is not installed. The request listed it, and installing it
+would contradict the single writer design the whole write path is built around.
+Verified: `bash -n`, the example config validates against the settings model, and
+482 tests. The script itself is unrun: this machine is Windows, and the only
+honest verification is the first run on the server.
+Not done: no second server, no TLS of our own, no backups, and the ngrok free
+tier changes hostname on restart unless a domain is reserved. All recorded.
+
 ## Summary for the design doc
 
 Write this at the end, from the entries above. Three or four sentences covering

@@ -30,6 +30,40 @@ uv run python -m rag.db.migrate
 `config/settings.yaml` is optional. Without it the loader reads
 `config/settings.example.yaml`, so a clean clone runs.
 
+## Run it on a server
+
+`scripts/provision.sh` takes a fresh Ubuntu or Debian box to a public API in one
+command. It installs uv, Python 3.12, Postgres, this project and its models, and
+ngrok, then runs the API and the tunnel as systemd services so both survive a
+logout and a reboot.
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... NGROK_AUTHTOKEN=2abc... ./scripts/provision.sh
+```
+
+It prints the public https url and the API key to paste into the Streamlit Cloud
+app's secrets as `RAG_API_BASE` and `RAG_API_KEY`.
+
+Qdrant is not installed, on purpose. It runs in process inside the API, which is
+why the API is the only process allowed to hold the collection.
+
+The API key is generated, not `dev-key`, and the script asserts that `dev-key` is
+rejected by the running service before it reports success. A key published in a
+repository is not a key.
+
+Options, all environment variables:
+
+| Variable | Default | Why |
+|---|---|---|
+| `NGROK_DOMAIN` | none | A reserved domain, so the url survives a restart |
+| `INSTALL_BROWSERS` | `1` | `0` skips Chromium and Camoufox, and fetch tiers 2 and 3 then fail |
+| `SCRAPINGBEE_API_KEY` | none | Tier 4. Without it a tier 4 source fails at the last tier |
+| `REPO_DIR` | `~/agentic-rag` | Where to check out |
+| `PG_PASSWORD` | generated | Only needed to set or reset the Postgres role |
+
+Running it again repairs a half finished run rather than duplicating it, and
+keeps the API key it generated the first time.
+
 ## Run the pipeline
 
 ```bash

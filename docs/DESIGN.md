@@ -428,6 +428,11 @@ Every shortcut, stated plainly.
   the collection. Re-ingesting the same document overwrites its points, because
   chunk ids are deterministic, so search results never duplicate, but genuinely
   removing a document is not supported.
+- Deployment is one box and one tunnel. `scripts/provision.sh` puts the API and
+  ngrok on a single server as systemd units: no TLS of our own, no process
+  manager beyond systemd, no backups, and the ngrok free tier hands out a new
+  hostname on every restart unless a domain is reserved. Secrets live in `.env`
+  and `config/settings.yaml` on the box, mode 0600, not in a secret manager.
 - `ui/` is a demo surface, not a product. No auth beyond the key in the sidebar,
   and one shared Streamlit session state, so two people opening it at once share
   nothing but also confuse each other's reruns. Progress is polled once a second
